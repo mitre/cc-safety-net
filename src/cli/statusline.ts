@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   ENV_FLAGS,
   envTruthy,
@@ -35,9 +36,9 @@ function getSettingsPath(): string {
   return join(homedir(), '.claude', 'settings.json');
 }
 
-interface ClaudeSettings {
-  enabledPlugins?: Record<string, boolean>;
-}
+const claudeSettingsSchema = z.object({
+  enabledPlugins: z.record(z.string(), z.boolean()).optional(),
+});
 
 /**
  * Whether the plugin is enabled in Claude Code. Nothing is enforced while it is
@@ -53,7 +54,7 @@ export function isPluginEnabled(): boolean {
 
   try {
     const content = readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(content) as ClaudeSettings;
+    const settings = claudeSettingsSchema.parse(JSON.parse(content));
 
     // If enabledPlugins doesn't exist or plugin not listed, default to disabled
     if (!settings.enabledPlugins) {

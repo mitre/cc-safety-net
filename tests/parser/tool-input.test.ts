@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 import {
   extractPatchTargetsFromToolInput,
   extractPathLikeToolValues,
@@ -12,12 +13,14 @@ function gitFallbackTarget(comparison: number, marker: string): string {
   return Array.from({ length: comparison }, (_, index) => `${marker}-${index}`).join(' ');
 }
 
-function captureToolInputError(run: () => unknown): Error {
+const ToolInputErrorSchema = z.instanceof(Error);
+const NestedToolInputSchema = z.object({ nested: z.unknown() });
+
+function captureToolInputError(run: () => void): Error {
   try {
     run();
   } catch (error) {
-    expect(error).toBeInstanceOf(Error);
-    return error as Error;
+    return ToolInputErrorSchema.parse(error);
   }
   throw new Error('Expected tool input parsing to fail');
 }
@@ -144,15 +147,17 @@ describe('bounded tool input traversal', () => {
   });
 
   test('fails closed on cycles and exhausted depth or node budgets', () => {
-    const cyclic: Record<string, unknown> = {};
-    cyclic.self = cyclic;
+    const cyclic = {};
+    Object.defineProperty(cyclic, 'self', { value: cyclic, enumerable: true });
     expect(() => extractPathLikeToolValues(cyclic, new Set(['path']))).toThrow(
       'tool input traversal limit exceeded',
     );
 
-    const exactDepth: Record<string, unknown> = { path: 'target' };
-    let nested = exactDepth;
-    for (let depth = 1; depth < TOOL_INPUT_LIMITS.maxDepth; depth++) nested = { nested };
+    const exactDepth = { path: 'target' };
+    const nested = Array.from({ length: TOOL_INPUT_LIMITS.maxDepth - 1 }).reduce(
+      (value) => NestedToolInputSchema.parse({ nested: value }),
+      exactDepth,
+    );
     expect(extractPathLikeToolValues(nested, new Set(['path']))).toEqual(['target']);
     expect(() => extractPathLikeToolValues({ nested }, new Set(['path']))).toThrow(
       'tool input traversal limit exceeded',
@@ -173,7 +178,7 @@ describe('bounded tool input traversal', () => {
   });
 
   test('rejects inherited fields, nonstandard prototypes, accessors, and proxy traps', () => {
-    const inherited = Object.create({ path: '.env' }) as Record<string, unknown>;
+    const inherited = Object.create({ path: '.env' });
     const getter = Object.defineProperty({}, 'path', {
       enumerable: true,
       get: () => '.env',

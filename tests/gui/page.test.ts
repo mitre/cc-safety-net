@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 import { renderPolicyGuiHtml } from '@/gui/page';
 
 describe('renderPolicyGuiHtml', () => {
@@ -11,6 +12,6 @@ describe('renderPolicyGuiHtml', () => {
     // A payload that closed the tag would be truncated here, so parsing it back
     // to the original token proves the whole token stayed inside the tag.
     expect(payload).toBeDefined();
-    expect(JSON.parse(payload as string)).toEqual({ token });
+    expect(JSON.parse(z.string().parse(payload))).toEqual({ token });
   });
 });

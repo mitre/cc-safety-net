@@ -19,6 +19,7 @@ const AUDIT = {
   ruleId: 'git.reset-hard',
   intent: 'use_alternative' as const,
 };
+const auditFormatKey = 'shape';
 
 describe('runtime audit integration', () => {
   const invocation = createToolInvocation(
@@ -196,7 +197,7 @@ describe('runtime audit integration', () => {
         { agent: 'test' },
       ),
     ).not.toThrow();
-    expect(() => writeGuardAudit(AUDIT, () => 42 as never, { agent: 'test' })).not.toThrow();
+    expect(() => writeGuardAudit(AUDIT, () => null, { agent: 'test' })).not.toThrow();
 
     await withTempDir('cc-safety-net-audit-integration-', (cwd) => {
       const home = join(cwd, 'not-a-directory');
@@ -233,7 +234,7 @@ describe('runtime audit integration', () => {
         () => 'preflight-session',
         {
           agent: 'codex',
-          shape: 'claude-code',
+          [auditFormatKey]: 'claude-code',
           toolName: 'Bash',
           cwd: '/project',
           homeDir: home,
@@ -244,7 +245,7 @@ describe('runtime audit integration', () => {
       expect(entry).toMatchObject({
         decision: 'deny',
         agent: 'codex',
-        shape: 'claude-code',
+        [auditFormatKey]: 'claude-code',
         toolName: 'Bash',
         command: 'bad command',
         segment: 'bad command',

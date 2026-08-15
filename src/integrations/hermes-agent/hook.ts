@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { z } from 'zod';
 import type { IntegrationDenial } from '@/integrations/denial';
 import {
   getToolRoute,
@@ -22,11 +23,14 @@ interface HermesAgentHookInput {
   cwd?: string;
 }
 
+const hermesToolInputSchema = z.looseObject({ workdir: z.json().optional() });
+type HermesToolInput = z.input<typeof hermesToolInputSchema>;
+
 /** `terminal` is the only Hermes tool that carries a shell command. */
 const HERMES_AGENT_COMMAND_TOOLS = new Map<string, CommandToolKind>([['terminal', 'posix']]);
 
 export async function runHermesAgentHook(): Promise<void> {
-  await runConfiguredHookAdapter<HermesAgentHookInput>({
+  await runConfiguredHookAdapter<HermesAgentHookInput, unknown, HermesToolInput>({
     agent: 'hermes-agent',
     // Hermes reads `{"action":"block","message":...}` as the tool result the model sees, and
     // treats empty stdout as "no directive", so an allowed call prints nothing.
@@ -35,7 +39,7 @@ export async function runHermesAgentHook(): Promise<void> {
     getToolName: (input) => input.tool_name,
     getToolInput: (input, toolName) => ({
       ok: true,
-      input: input.tool_input,
+      input: hermesToolInputSchema.safeParse(input.tool_input).data ?? {},
       route: getToolRoute(toolName, HERMES_AGENT_COMMAND_TOOLS),
     }),
     getContext: resolveHermesAgentContext,
@@ -50,17 +54,16 @@ export async function runHermesAgentHook(): Promise<void> {
  */
 function resolveHermesAgentContext(
   input: HermesAgentHookInput,
-  toolInput: unknown,
+  toolInput: HermesToolInput,
   toolName: string,
   outputDeny: (denial: IntegrationDenial) => void,
 ): ToolCallContext | null {
   const context = resolveStandardHookContext(input.cwd, toolInput, toolName, outputDeny);
   if (!context) return null;
-  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return context;
   if (!Object.hasOwn(toolInput, 'workdir')) return context;
 
-  const workdir = (toolInput as Record<string, unknown>).workdir;
-  if (typeof workdir !== 'string' || workdir.trim() === '') {
+  const workdir = z.string().trim().min(1).safeParse(toolInput.workdir).data;
+  if (!workdir) {
     outputFailedClosed(outputDeny, toolInput, toolName);
     return null;
   }

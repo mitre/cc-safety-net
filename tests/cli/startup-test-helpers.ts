@@ -1,13 +1,15 @@
 import { expect } from 'bun:test';
 import { resolveAfterOptionalBanner } from '@/cli/startup/banner';
 
+type BannerCompletion = { resolve: (() => void) | null };
+
 export async function expectBannerWaitsForStartedWork(options: {
   startEvent: string;
   finishEvent: string;
   result: string;
 }) {
   const events: string[] = [];
-  const finishBanner: { resolve: (() => void) | null } = { resolve: null };
+  const finishBanner: BannerCompletion = { resolve: null };
 
   const result = resolveAfterOptionalBanner(
     true,

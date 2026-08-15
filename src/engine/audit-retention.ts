@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { AuditLogEntry } from '@/ir/audit';
+import { z } from 'zod';
 import {
   clampAuditRetentionDays,
   DEFAULT_AUDIT_RETENTION_DAYS,
@@ -25,6 +25,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const PRUNE_MARKER_NAME = '.last-prune';
 const MONTH_DIR = /^\d{4}-\d{2}$/;
 const DATED_LOG_FILE = /^((\d{4}-\d{2})-\d{2})-.+\.jsonl$/;
+const RetentionPolicySchema = z.looseObject({
+  audit: z.looseObject({ retention_days: z.number().optional() }).optional(),
+});
+const AuditTimestampSchema = z.looseObject({ ts: z.string() });
 
 const utcDay = (ms: number) => Math.floor(ms / DAY_MS);
 
@@ -40,10 +44,8 @@ const utcDay = (ms: number) => Math.floor(ms / DAY_MS);
 export function resolveAuditRetentionDays(options?: RulesPolicyOptions): number {
   try {
     const path = join(dirname(getUserRulesDir(options)), POLICY_FILE);
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
-      audit?: { retention_days?: unknown };
-    };
-    return clampAuditRetentionDays(parsed?.audit?.retention_days);
+    const parsed = RetentionPolicySchema.safeParse(JSON.parse(readFileSync(path, 'utf-8')));
+    return clampAuditRetentionDays(parsed.success ? parsed.data.audit?.retention_days : undefined);
   } catch {
     // Missing, unreadable, or malformed: the default window still applies.
     return DEFAULT_AUDIT_RETENTION_DAYS;
@@ -148,8 +150,9 @@ function pruneLegacyFile(filePath: string, cutoff: number): void {
 
 function parseEntryTimestamp(line: string): number | undefined {
   try {
-    const ts = (JSON.parse(line) as AuditLogEntry).ts;
-    const parsed = typeof ts === 'string' ? Date.parse(ts) : Number.NaN;
+    const result = AuditTimestampSchema.safeParse(JSON.parse(line));
+    if (!result.success) return undefined;
+    const parsed = Date.parse(result.data.ts);
     return Number.isFinite(parsed) ? parsed : undefined;
   } catch {
     return undefined;

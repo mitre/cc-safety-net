@@ -3,10 +3,21 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { PluginAPI } from '@ampcode/plugin';
+import type {
+  PluginAPI,
+  Subscription,
+  ToolCall,
+  ToolCallEvent,
+  ToolCallResult,
+} from '@ampcode/plugin';
+import { z } from 'zod';
 import ccSafetyNetAmpPlugin from '@/integrations/amp/index';
 
-type Registration = { event: string; handler: (event: unknown) => unknown };
+type Registration = {
+  event: 'tool.call';
+  handler: (event: ToolCallEvent) => ToolCallResult;
+};
+const shellToolCallSchema = z.object({ input: z.object({ command: z.string() }) });
 
 describe('Amp plugin entrypoint', () => {
   test('registers exactly one tool.call handler that guards the call', () => {
@@ -28,7 +39,7 @@ describe('Amp plugin entrypoint', () => {
   });
 });
 
-function shellEvent(command: string) {
+function shellEvent(command: string): ToolCallEvent {
   return {
     toolUseID: 'amp-tool-use',
     tool: 'shell_command',
@@ -37,17 +48,23 @@ function shellEvent(command: string) {
   };
 }
 
-function fakeAmp(registrations: Registration[], rootDir: string): PluginAPI {
+function fakeAmp(registrations: Registration[], rootDir: string) {
   return {
     system: { workspaceRoot: pathToFileURL(rootDir) },
     helpers: {
       filePathFromURI: (uri: { toString(): string }) => fileURLToPath(uri.toString()),
-      shellCommandFromToolCall: (event: { tool: string; input: Record<string, unknown> }) =>
-        event.tool === 'shell_command' ? { command: event.input.command as string } : null,
+      shellCommandFromToolCall: (event: ToolCall) => {
+        if (event.tool !== 'shell_command') return null;
+        return { command: shellToolCallSchema.parse(event).input.command };
+      },
     },
-    on: (event: string, handler: (event: unknown) => unknown) => {
+    on: (event: 'tool.call', handler: (event: ToolCallEvent) => ToolCallResult) => {
       registrations.push({ event, handler });
       return { unsubscribe: () => {} };
     },
-  } as unknown as PluginAPI;
+  } satisfies {
+    system: Pick<PluginAPI['system'], 'workspaceRoot'>;
+    helpers: Pick<PluginAPI['helpers'], 'filePathFromURI' | 'shellCommandFromToolCall'>;
+    on: (event: 'tool.call', handler: (event: ToolCallEvent) => ToolCallResult) => Subscription;
+  };
 }

@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { z } from 'zod';
+
+const ServerAddressSchema = z.object({ port: z.number() });
 
 export async function withLoopbackServer(
   respond: (request: IncomingMessage, response: ServerResponse) => void,
@@ -7,7 +9,7 @@ export async function withLoopbackServer(
 ): Promise<void> {
   const server = createServer(respond);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const origin = `http://127.0.0.1:${ServerAddressSchema.parse(server.address()).port}`;
   try {
     await run(origin);
   } finally {

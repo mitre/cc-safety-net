@@ -4,6 +4,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import { z } from 'zod';
 import type { NativeCommand } from '@/integrations/install/native';
 import {
   INSTALL_TARGETS,
@@ -99,14 +100,13 @@ export function buildInstallTargetChoices(
     );
   }
 
-  const syncProbe = probe as InstallTargetProbe;
   return INSTALL_TARGETS.map((target) => ({
     target: target.target,
     flag: target.flag,
     label: target.label,
     ...getChoiceAvailability(
       options.action,
-      syncProbe(target.probeCommand),
+      z.boolean().safeParse(probe(target.probeCommand)).data ?? false,
       configuredTargets.has(target.target),
     ),
   }));

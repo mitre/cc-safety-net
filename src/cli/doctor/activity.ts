@@ -11,7 +11,7 @@ import {
   pruneExpiredAuditLogs,
 } from '@/engine/facade';
 import type { ActivitySummary } from '@/integrations/doctor-types';
-import type { AuditLogEntry } from '@/ir/audit';
+import { type AuditLogEntry, AuditLogEntrySchema } from '@/ir/audit';
 
 export function getActivitySummary(
   days: number = 7,
@@ -38,7 +38,7 @@ export function getActivitySummary(
 
       for (const line of lines) {
         try {
-          const entry = JSON.parse(line) as AuditLogEntry;
+          const entry = AuditLogEntrySchema.parse(JSON.parse(line));
           if (entry.decision === 'allow') {
             continue;
           }

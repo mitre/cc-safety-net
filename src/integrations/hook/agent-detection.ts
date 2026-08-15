@@ -8,12 +8,12 @@ import {
   resolveExistingPath,
 } from '@/integrations/runtime';
 
-type ClaudeShapeAgent = 'codex' | 'copilot-cli' | 'claude-code' | 'unknown';
+type ClaudeCompatibleAgent = 'codex' | 'copilot-cli' | 'claude-code' | 'unknown';
 
 /** Detect the caller behind a Claude Code-shaped hook payload. */
-export function detectClaudeShapeAgent(
+export function detectClaudeCompatibleAgent(
   transcriptPath: string | null | undefined,
-): ClaudeShapeAgent {
+): ClaudeCompatibleAgent {
   if (transcriptPath !== undefined && transcriptPath !== null && !isAbsolute(transcriptPath)) {
     return 'unknown';
   }

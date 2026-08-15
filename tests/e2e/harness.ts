@@ -12,13 +12,25 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import * as schema from 'zod';
 import { redactSecrets } from '@/engine/audit';
 import { listAuditLogFiles } from '@/engine/audit-scan';
+import type { JsonValue } from '@/policy/store';
 import { readAuditLogEntriesForSession } from '../helpers';
 
 export type SafetyLevel = 'standard' | 'strict' | 'paranoid';
 
 export type GateResult = { allowed: true } | { allowed: false; reason: string };
+
+export type SubprocessInput = string | JsonValue;
+
+const subprocessJsonObjectSchema = schema.record(schema.string(), schema.json());
+export type SubprocessJsonObject = schema.infer<typeof subprocessJsonObjectSchema>;
+
+export const hermesDirectiveSchema = schema
+  .object({ action: schema.literal('block'), message: schema.string() })
+  .nullable();
+export type HermesDirective = schema.infer<typeof hermesDirectiveSchema>;
 
 /**
  * Emit the packaged artifacts under test into a fresh cache directory and return the root that
@@ -51,8 +63,9 @@ export async function withWorkspace<T>(
   try {
     return await run({ cwd, home });
   } catch (error) {
+    const failure = error instanceof Error ? error : String(error);
     try {
-      preserveFailureEvidence(root, home, error);
+      preserveFailureEvidence(root, home, failure);
     } catch (artifactError) {
       console.error(`Failed to preserve E2E evidence: ${redactSecrets(String(artifactError))}`);
     }
@@ -62,7 +75,7 @@ export async function withWorkspace<T>(
   }
 }
 
-function preserveFailureEvidence(root: string, home: string, error: unknown) {
+function preserveFailureEvidence(root: string, home: string, error: Error | string) {
   const artifactRoot = process.env.CC_SAFETY_NET_E2E_ARTIFACTS?.trim();
   if (!artifactRoot) return;
   const destination = join(artifactRoot, basename(root));
@@ -112,7 +125,7 @@ export function expectSingleAudit(
  */
 export async function runCommand(
   argv: string[],
-  input: unknown,
+  input: SubprocessInput,
   cwd: string,
   home: string,
   options: { level?: SafetyLevel; env?: Record<string, string> } = {},
@@ -124,7 +137,8 @@ export async function runCommand(
     cwd,
     env: { ...isolatedEnv(home, options.level), ...options.env },
   });
-  proc.stdin.write(typeof input === 'string' ? input : JSON.stringify(input));
+  const textInput = schema.string().safeParse(input);
+  proc.stdin.write(textInput.success ? textInput.data : JSON.stringify(input));
   proc.stdin.end();
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -140,7 +154,7 @@ export async function runCommand(
 
 export function runNode(
   args: string[],
-  input: unknown,
+  input: SubprocessInput,
   cwd: string,
   home: string,
   level?: SafetyLevel,
@@ -151,7 +165,7 @@ export function runNode(
 export async function runBuiltHost(
   bundlePath: string,
   hostScript: string,
-  input: unknown,
+  input: SubprocessInput,
   cwd: string,
   home: string,
 ) {
@@ -166,7 +180,7 @@ export async function runBuiltHost(
 
 export function parseJsonOutput(label: string, output: string) {
   try {
-    return JSON.parse(output) as Record<string, unknown>;
+    return subprocessJsonObjectSchema.parse(JSON.parse(output));
   } catch (error) {
     throw new Error(`${label} returned invalid JSON:\n${redactSecrets(output)}`, { cause: error });
   }
@@ -230,10 +244,7 @@ export type HermesGate = {
   ) => Promise<GateResult>;
 };
 
-export function readHermesDirective(
-  directive: Record<string, unknown> | null,
-  action: () => void,
-): GateResult {
+export function readHermesDirective(directive: HermesDirective, action: () => void): GateResult {
   if (!directive) {
     action();
     return { allowed: true };

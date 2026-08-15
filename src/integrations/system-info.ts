@@ -6,16 +6,26 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, extname, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
+import { z } from 'zod';
 
 import type { SystemInfo } from '@/integrations/doctor-types';
 
 declare const __PKG_VERSION__: string | undefined;
 
-const CURRENT_VERSION = typeof __PKG_VERSION__ !== 'undefined' ? __PKG_VERSION__ : 'dev';
+const packageVersionSchema = z.string();
+const CURRENT_VERSION = readPackageVersion();
 // These probes all race in one Promise.all, and Electron-backed CLIs (Cursor) can exceed 2s
 // while every probe contends.
 const VERSION_FETCH_TIMEOUT_MS = 5000;
 const TEST_SPAWN_PLATFORM_ENV = '_CC_SAFETY_NET_TEST_SPAWN_PLATFORM';
+
+function readPackageVersion(): string {
+  try {
+    return packageVersionSchema.parse(__PKG_VERSION__);
+  } catch {
+    return 'dev';
+  }
+}
 
 /**
  * Get the package version synchronously.
@@ -30,6 +40,8 @@ export function getPackageVersion(): string {
  * Takes command args and returns the version string or null.
  */
 export type VersionFetcher = (args: string[], timeoutMs?: number) => Promise<string | null>;
+
+type SpawnCommand = { cmd: string; args: string[] };
 
 function getEnvValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const direct = env[name];
@@ -73,10 +85,7 @@ function quoteWindowsCommandArg(value: string): string {
  * Windows-safe argv: npm-distributed CLIs exist there only as `.cmd` shims, which
  * spawn cannot start directly, so those are run through COMSPEC.
  */
-export function getSpawnCommand(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): { cmd: string; args: string[] } {
+export function getSpawnCommand(args: string[], env: NodeJS.ProcessEnv): SpawnCommand {
   const [command, ...rest] = args;
   const platform = env[TEST_SPAWN_PLATFORM_ENV] === 'win32' ? 'win32' : process.platform;
   if (!command || platform !== 'win32') return { cmd: command ?? '', args: rest };

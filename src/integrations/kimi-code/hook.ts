@@ -15,7 +15,6 @@ interface KimiCodeHookInput {
   tool_name?: string;
   tool_input?: {
     command?: string;
-    [key: string]: unknown;
   };
   tool_call_id?: string;
 }

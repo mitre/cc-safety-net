@@ -13,6 +13,7 @@ import { runHermesAgentHook } from '@/integrations/hermes-agent/hook';
 import type { InstallTargetChoice } from '@/integrations/install/choices';
 import type { InstallAction } from '@/integrations/install/targets';
 import { runKimiCodeHook } from '@/integrations/kimi-code/hook';
+import type { GuiPolicy } from '@/policy/store';
 
 /**
  * Shared test helpers for CLI hook integration tests.
@@ -35,6 +36,61 @@ export type HookFormat =
 
 export const TEST_HOOK_CWD = mkdtempSync(join(tmpdir(), 'safety-net-hook-cwd-'));
 
+type HookFixtureValue =
+  | undefined
+  | boolean
+  | number
+  | string
+  | null
+  | readonly HookFixtureValue[]
+  | { readonly [key: string]: HookFixtureValue };
+type HookFixtureObject = { readonly [key: string]: HookFixtureValue };
+type HookTestInput = HookFixtureObject | readonly HookFixtureValue[] | string;
+type UserPolicyFixture = {
+  version: GuiPolicy['version'];
+  secret_protection?: Partial<GuiPolicy['secret_protection']>;
+};
+
+class PromptInput extends PassThrough {
+  fd = 0;
+  isRaw = false;
+  isTTY = true;
+
+  setRawMode(mode: boolean) {
+    this.isRaw = mode;
+    return this;
+  }
+}
+
+class PromptOutput extends Writable {
+  columns = 80;
+  fd = 1;
+  isTTY = true;
+  rows = 24;
+
+  clearLine() {
+    return true;
+  }
+  clearScreenDown() {
+    return true;
+  }
+  cursorTo() {
+    return true;
+  }
+  getColorDepth() {
+    return 1;
+  }
+  getWindowSize(): [number, number] {
+    return [this.columns, this.rows];
+  }
+  hasColors() {
+    return false;
+  }
+  moveCursor() {
+    return true;
+  }
+}
+
 export function makeTempHome(name: string) {
   return mkdtempSync(join(tmpdir(), `${name}-`));
 }
@@ -45,21 +101,13 @@ export function makeTempHome(name: string) {
  */
 export function createInstallPromptStreams() {
   const chunks: string[] = [];
-  const input = new PassThrough() as unknown as NodeJS.ReadStream;
-  const output = new Writable({
+  const input = new PromptInput();
+  const output = new PromptOutput({
     write(chunk, _encoding, callback) {
       chunks.push(String(chunk));
       callback();
     },
-  }) as NodeJS.WriteStream;
-
-  input.isTTY = true;
-  input.setRawMode = (mode) => {
-    input.isRaw = mode;
-    return input;
-  };
-  input.isRaw = false;
-  output.isTTY = true;
+  });
 
   return { chunks, input, output };
 }
@@ -78,7 +126,7 @@ const INSTALL_PROMPT_KEYS = {
   u: ['u', { name: 'u' }],
   up: ['', { name: 'up' }],
   x: ['x', { name: 'x' }],
-} as const satisfies Record<string, readonly [string, Record<string, unknown>]>;
+} as const;
 
 /**
  * Starts a prompt on fake TTY streams. `press` feeds keys in order, and `result` resolves
@@ -150,7 +198,7 @@ export type HookTestContext = {
   runCursorHook: typeof runCursorHookDirect;
 };
 
-export function writeUserPolicy(home: string, policy: unknown): void {
+export function writeUserPolicy(home: string, policy: UserPolicyFixture): void {
   mkdirSync(join(home, '.cc-safety-net'), { recursive: true });
   writeFileSync(join(home, '.cc-safety-net', 'policy.json'), JSON.stringify(policy), 'utf-8');
 }
@@ -172,49 +220,29 @@ export async function withHookTestContext<T>(fn: (context: HookTestContext) => T
       kimiShellInput: (command) => kimiShellInput(command, cwd),
       cursorShellInput: (command) => cursorShellInput(command, cwd),
       runCli: (args, input = '', env) =>
-        runCli(args, input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) }, cwd),
+        runCli(args, input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env }, cwd),
       runClaudeCodeHook: (input, env) =>
         runClaudeCodeHookDirect(
           input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
+          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env },
           cwd,
         ),
       runGeminiHook: (input, env) =>
-        runGeminiHookDirect(
-          input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
-          cwd,
-        ),
+        runGeminiHookDirect(input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env }, cwd),
       runHermesHook: (input, env) =>
-        runHermesHookDirect(
-          input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
-          cwd,
-        ),
+        runHermesHookDirect(input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env }, cwd),
       runKimiHook: (input, env) =>
-        runKimiHookDirect(
-          input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
-          cwd,
-        ),
+        runKimiHookDirect(input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env }, cwd),
       runCopilotHook: (input, env) =>
-        runCopilotHookDirect(
-          input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
-          cwd,
-        ),
+        runCopilotHookDirect(input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env }, cwd),
       runAntigravityHook: (input, env) =>
         runAntigravityHookDirect(
           input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
+          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env },
           cwd,
         ),
       runCursorHook: (input, env) =>
-        runCursorHookDirect(
-          input,
-          { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...(env ?? {}) },
-          cwd,
-        ),
+        runCursorHookDirect(input, { HOME: home, CC_SAFETY_NET_HOME: safetyNetHome, ...env }, cwd),
     });
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -310,7 +338,7 @@ export function cursorShellInput(command: string, cwd = TEST_HOOK_CWD) {
 
 export function cursorFileInput(
   toolName: string,
-  toolInput: Record<string, unknown>,
+  toolInput: HookFixtureObject,
   cwd = TEST_HOOK_CWD,
 ) {
   return {
@@ -352,11 +380,11 @@ export async function runCli(
     }
   }
 
-  const mergedEnv: Record<string, string> = {
+  const mergedEnv = {
     ...baseEnv,
     HOME: home,
     CC_SAFETY_NET_AUDIT_HOME: env?.CC_SAFETY_NET_AUDIT_HOME ?? home,
-    ...(env ?? {}),
+    ...env,
   };
 
   const proc = Bun.spawn(['bun', join(process.cwd(), 'src/cli/cc-safety-net.ts'), ...args], {
@@ -379,7 +407,7 @@ let directHookQueue = Promise.resolve();
 
 function runHookDirect(
   run: () => Promise<void>,
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ): Promise<HookResult> {
@@ -392,7 +420,7 @@ function runHookDirect(
     const effectiveEnv = {
       HOME: home,
       CC_SAFETY_NET_AUDIT_HOME: env?.CC_SAFETY_NET_AUDIT_HOME ?? home,
-      ...(env ?? {}),
+      ...env,
     };
     const originalEnv = Object.fromEntries(
       Object.keys(effectiveEnv).map((key) => [key, process.env[key]]),
@@ -405,9 +433,7 @@ function runHookDirect(
     Object.assign(process.env, effectiveEnv);
     process.chdir(cwd);
     Object.defineProperty(process, 'stdin', {
-      value: Readable.from([
-        Buffer.from(typeof input === 'string' ? input : JSON.stringify(input)),
-      ]),
+      value: Readable.from([Buffer.from(input instanceof Object ? JSON.stringify(input) : input)]),
       configurable: true,
     });
 
@@ -437,7 +463,7 @@ function runHookDirect(
 }
 
 export function runClaudeCodeHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -445,7 +471,7 @@ export function runClaudeCodeHookDirect(
 }
 
 export function runGeminiHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -453,7 +479,7 @@ export function runGeminiHookDirect(
 }
 
 export function runHermesHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -461,7 +487,7 @@ export function runHermesHookDirect(
 }
 
 export function runKimiHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -469,7 +495,7 @@ export function runKimiHookDirect(
 }
 
 export function runCopilotHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -477,7 +503,7 @@ export function runCopilotHookDirect(
 }
 
 export function runAntigravityHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -485,7 +511,7 @@ export function runAntigravityHookDirect(
 }
 
 export function runCursorHookDirect(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ) {
@@ -498,8 +524,8 @@ export function expectCursorAllowOutput(result: HookResult): void {
 }
 
 export async function expectNoHookOutput(
-  run: (input: object | string, env?: Record<string, string>) => Promise<HookResult>,
-  input: object | string,
+  run: (input: HookTestInput, env?: Record<string, string>) => Promise<HookResult>,
+  input: HookTestInput,
   env?: Record<string, string>,
 ): Promise<void> {
   const { stdout, exitCode } = await run(input, env);
@@ -553,11 +579,11 @@ export function expectSecretProtectionDeny(result: HookResult, format: HookForma
  * Runs the Coding CLI hook.
  */
 export async function runCodingCliHook(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ): Promise<HookResult> {
-  const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+  const inputStr = input instanceof Object ? JSON.stringify(input) : input;
   return runHook('--coding-cli', inputStr, env, cwd);
 }
 
@@ -565,11 +591,11 @@ export async function runCodingCliHook(
  * Runs the Gemini CLI hook.
  */
 export async function runGeminiHook(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ): Promise<HookResult> {
-  const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+  const inputStr = input instanceof Object ? JSON.stringify(input) : input;
   return runHook('-gc', inputStr, env, cwd);
 }
 
@@ -577,11 +603,11 @@ export async function runGeminiHook(
  * Runs the Kimi Code hook.
  */
 export async function runKimiHook(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ): Promise<HookResult> {
-  const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+  const inputStr = input instanceof Object ? JSON.stringify(input) : input;
   return runHook('-kc', inputStr, env, cwd);
 }
 
@@ -589,11 +615,11 @@ export async function runKimiHook(
  * Runs the GitHub Copilot CLI hook.
  */
 export async function runCopilotHook(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ): Promise<HookResult> {
-  const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+  const inputStr = input instanceof Object ? JSON.stringify(input) : input;
   return runHook('-cp', inputStr, env, cwd);
 }
 
@@ -601,10 +627,10 @@ export async function runCopilotHook(
  * Runs the Antigravity CLI hook.
  */
 export async function runAntigravityHook(
-  input: object | string,
+  input: HookTestInput,
   env?: Record<string, string>,
   cwd = TEST_HOOK_CWD,
 ): Promise<HookResult> {
-  const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+  const inputStr = input instanceof Object ? JSON.stringify(input) : input;
   return runHook('-ac', inputStr, env, cwd);
 }

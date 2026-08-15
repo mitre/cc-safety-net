@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 import { assertValidRulebook, type Rulebook } from '@/rules/rulebook';
 import {
   bindPolicyFilesystemScope,
@@ -111,9 +112,9 @@ export async function discoverGitHubRepositoryRulebooks(
   if (!metadataResponse.ok) {
     throw new Error(`Failed to inspect ${source}: GitHub returned ${metadataResponse.status}`);
   }
-  const metadata = JSON.parse(metadataResource.content) as {
-    default_branch?: string;
-  };
+  const metadata = z
+    .object({ default_branch: z.string().optional() })
+    .parse(JSON.parse(metadataResource.content));
   if (!metadata.default_branch) {
     throw new Error(`Failed to inspect ${source}: missing default branch`);
   }
@@ -127,12 +128,16 @@ export async function discoverGitHubRepositoryRulebooks(
   if (!treeResponse.ok) {
     throw new Error(`Failed to inspect ${source}: GitHub tree returned ${treeResponse.status}`);
   }
-  const treeJson = JSON.parse(treeResource.content) as {
-    tree?: Array<{ path?: string; type?: string }>;
-  };
+  const treeJson = z
+    .object({
+      tree: z
+        .array(z.object({ path: z.string().optional(), type: z.string().optional() }))
+        .optional(),
+    })
+    .parse(JSON.parse(treeResource.content));
   const names = (treeJson.tree ?? [])
     .flatMap((entry) => {
-      if (entry.type !== 'blob' || typeof entry.path !== 'string') return [];
+      if (entry.type !== 'blob' || !entry.path) return [];
       const match = entry.path.match(GITHUB_RULEBOOK_PATH_RE);
       return match?.[1] ? [match[1]] : [];
     })
@@ -268,9 +273,9 @@ function assertRulebookMatchesLockEntry(content: string, entry: GitHubRulebookLo
   return rulebook;
 }
 
-function parseRulebookJson(content: string, errorMessage: string): unknown {
+function parseRulebookJson(content: string, errorMessage: string) {
   try {
-    return JSON.parse(content) as unknown;
+    return z.json().parse(JSON.parse(content));
   } catch {
     throw new Error(errorMessage);
   }
@@ -292,9 +297,9 @@ async function resolveGitHubCommit(
   if (!commitResponse.ok) {
     throw new Error(`Failed to resolve ${source}: GitHub returned ${commitResponse.status}`);
   }
-  const commitJson = JSON.parse(commitResource.content) as {
-    sha?: string;
-  };
+  const commitJson = z
+    .object({ sha: z.string().optional() })
+    .parse(JSON.parse(commitResource.content));
   if (!commitJson.sha) {
     throw new Error(`Failed to resolve commit for ${source}`);
   }
@@ -407,7 +412,7 @@ function cancelGitHubResponseReader(reader: { cancel(): Promise<void> }): void {
   safelyCancelGitHubResponse(() => reader.cancel());
 }
 
-function safelyCancelGitHubResponse(cancel: () => unknown): void {
+function safelyCancelGitHubResponse(cancel: () => void | Promise<void>): void {
   try {
     Promise.resolve(cancel()).catch(() => {});
   } catch {}

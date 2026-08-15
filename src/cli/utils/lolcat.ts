@@ -30,7 +30,7 @@
 
 export type LolcatOutput = {
   readonly isTTY?: boolean;
-  write(chunk: string): unknown;
+  write(chunk: string): boolean;
 };
 
 export type LolcatSleep = (milliseconds: number) => Promise<void>;
@@ -126,7 +126,7 @@ function waitForAnimationFrame(
         cleanup();
         resolve();
       },
-      (error: unknown) => {
+      (error: Error) => {
         cleanup();
         reject(error);
       },

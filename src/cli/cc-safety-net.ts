@@ -176,7 +176,7 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-main().catch((error: unknown) => {
+main().catch((error: Error) => {
   console.error('CC Safety Net error:', error);
   process.exit(1);
 });

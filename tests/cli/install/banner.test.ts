@@ -4,6 +4,18 @@ import { printInstallBanner } from '@/cli/install/banner';
 import { withEnv } from '../../helpers';
 import { createLolcatOutput, renderTerminal } from '../lolcat-test-helpers';
 
+class FakeBannerInput extends PassThrough {
+  isRaw = false;
+  readonly isTTY = true;
+  readonly rawModes: boolean[] = [];
+
+  setRawMode(mode: boolean) {
+    this.isRaw = mode;
+    this.rawModes.push(mode);
+    return this;
+  }
+}
+
 async function withoutNoColor<T>(fn: () => Promise<T>) {
   const original = process.env.NO_COLOR;
   delete process.env.NO_COLOR;
@@ -20,21 +32,8 @@ async function withoutNoColor<T>(fn: () => Promise<T>) {
 }
 
 function createBannerInput() {
-  const rawModes: boolean[] = [];
-  const input = new PassThrough() as unknown as NodeJS.ReadStream & {
-    isRaw: boolean;
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => NodeJS.ReadStream;
-  };
-  input.isRaw = false;
-  input.isTTY = true;
-  input.setRawMode = (mode) => {
-    input.isRaw = mode;
-    rawModes.push(mode);
-    return input;
-  };
-
-  return { input, rawModes };
+  const input = new FakeBannerInput();
+  return { input, rawModes: input.rawModes };
 }
 
 describe('install banner', () => {

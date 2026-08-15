@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { detectClaudeShapeAgent } from '@/integrations/hook/agent-detection';
+import { detectClaudeCompatibleAgent } from '@/integrations/hook/agent-detection';
 import { withEnv, withTempDir } from '../../helpers';
 
 describe('Claude-shaped hook agent detection', () => {
@@ -14,7 +14,7 @@ describe('Claude-shaped hook agent detection', () => {
       const transcript = join(home, directory, 'sessions', 'transcript.jsonl');
       mkdirSync(join(transcript, '..'), { recursive: true });
 
-      expect(withEnv({ HOME: home }, () => detectClaudeShapeAgent(transcript))).toBe(agent);
+      expect(withEnv({ HOME: home }, () => detectClaudeCompatibleAgent(transcript))).toBe(agent);
     });
   });
 
@@ -29,7 +29,7 @@ describe('Claude-shaped hook agent detection', () => {
       mkdirSync(join(transcript, '..'), { recursive: true });
 
       expect(
-        withEnv({ [variable]: configuredRoot }, () => detectClaudeShapeAgent(transcript)),
+        withEnv({ [variable]: configuredRoot }, () => detectClaudeCompatibleAgent(transcript)),
       ).toBe(agent);
     });
   });
@@ -42,13 +42,15 @@ describe('Claude-shaped hook agent detection', () => {
       mkdirSync(join(sibling, '..'), { recursive: true });
       mkdirSync(shared, { recursive: true });
 
-      expect(detectClaudeShapeAgent(null)).toBe('unknown');
-      expect(detectClaudeShapeAgent(undefined)).toBe('unknown');
-      expect(detectClaudeShapeAgent('relative/transcript.jsonl')).toBe('unknown');
-      expect(withEnv({ CODEX_HOME: codex }, () => detectClaudeShapeAgent(sibling))).toBe('unknown');
+      expect(detectClaudeCompatibleAgent(null)).toBe('unknown');
+      expect(detectClaudeCompatibleAgent(undefined)).toBe('unknown');
+      expect(detectClaudeCompatibleAgent('relative/transcript.jsonl')).toBe('unknown');
+      expect(withEnv({ CODEX_HOME: codex }, () => detectClaudeCompatibleAgent(sibling))).toBe(
+        'unknown',
+      );
       expect(
         withEnv({ CODEX_HOME: shared, COPILOT_HOME: shared }, () =>
-          detectClaudeShapeAgent(join(shared, 'transcript.jsonl')),
+          detectClaudeCompatibleAgent(join(shared, 'transcript.jsonl')),
         ),
       ).toBe('unknown');
     });
@@ -63,7 +65,7 @@ describe('Claude-shaped hook agent detection', () => {
 
       expect(
         withEnv({ CODEX_HOME: codex }, () =>
-          detectClaudeShapeAgent(join(link, 'sessions', 'transcript.jsonl')),
+          detectClaudeCompatibleAgent(join(link, 'sessions', 'transcript.jsonl')),
         ),
       ).toBe('codex');
     });
@@ -73,11 +75,11 @@ describe('Claude-shaped hook agent detection', () => {
     await withTempDir('cc-safety-net-agent-env-', (root) => {
       const transcript = join(root, 'elsewhere', 'transcript.jsonl');
       expect(
-        withEnv({ HOME: root, CLAUDECODE: '1' }, () => detectClaudeShapeAgent(transcript)),
+        withEnv({ HOME: root, CLAUDECODE: '1' }, () => detectClaudeCompatibleAgent(transcript)),
       ).toBe('claude-code');
       expect(
         withEnv({ HOME: root, CLAUDE_CODE_ENTRYPOINT: 'cli' }, () =>
-          detectClaudeShapeAgent(transcript),
+          detectClaudeCompatibleAgent(transcript),
         ),
       ).toBe('claude-code');
     });
@@ -86,7 +88,7 @@ describe('Claude-shaped hook agent detection', () => {
   test('returns unknown when canonicalization exceeds its work limit', async () => {
     await withTempDir('cc-safety-net-agent-limit-', (root) => {
       const transcript = join(root, ...Array.from({ length: 257 }, () => 'missing'));
-      expect(withEnv({ CODEX_HOME: root }, () => detectClaudeShapeAgent(transcript))).toBe(
+      expect(withEnv({ CODEX_HOME: root }, () => detectClaudeCompatibleAgent(transcript))).toBe(
         'unknown',
       );
     });

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { z } from 'zod';
 import { AMP_HOST_SCRIPT, OPENCODE_HOST_SCRIPT, PI_HOST_SCRIPT } from './integration-host-scripts';
 import { verifyBuildArtifacts } from './verify-build';
 
@@ -28,11 +29,40 @@ const PACKAGE_ROOT_FILES = [
 // alone. Current size is ~490 KB; the cap leaves ~57 KB of headroom.
 const MAX_TARBALL_BYTES = 560_000;
 
-interface PackResult {
-  filename: string;
-  size: number;
-  files: Array<{ path: string; mode: number }>;
-}
+const packResultSchema = z.object({
+  filename: z.string(),
+  size: z.number(),
+  files: z.array(z.object({ path: z.string(), mode: z.number() })),
+});
+const packageManifestSchema = z
+  .object({
+    scripts: z.object({ prepare: z.string().optional() }).loose(),
+    gitHead: z.string().optional(),
+  })
+  .loose();
+const cliHookOutputSchema = z.object({
+  hookSpecificOutput: z
+    .object({
+      permissionDecision: z.string().optional(),
+      permissionDecisionReason: z.string().optional(),
+    })
+    .optional(),
+});
+const piHostOutputSchema = z.object({
+  result: z
+    .object({ block: z.boolean().optional(), reason: z.string().optional() })
+    .nullable()
+    .optional(),
+});
+const openCodeHostOutputSchema = z.object({
+  allowed: z.boolean(),
+  reason: z.string().optional(),
+});
+const ampHostOutputSchema = z.object({ action: z.string(), message: z.string().optional() });
+
+type PackedHostInput =
+  | ReturnType<typeof integrationToolRequest>
+  | ReturnType<typeof openCodeToolRequest>;
 
 interface BuildPackageTarballOptions {
   outputDirectory: string;
@@ -55,8 +85,8 @@ function run(
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    ...(stdin === undefined ? {} : { stdin: Buffer.from(stdin) }),
-    ...(env === undefined ? {} : { env }),
+    stdin: stdin === undefined ? undefined : Buffer.from(stdin),
+    env,
   });
   if (allowedExitCodes.includes(result.exitCode)) return result;
   throw new Error(
@@ -75,12 +105,11 @@ export async function verifyPackage(): Promise<void> {
   try {
     const buildArtifacts = await verifyBuildArtifacts();
     const gitHeadArgument = process.argv.indexOf('--git-head');
-    const { result, tarball } = await buildPackageTarball({
-      outputDirectory,
-      ...(gitHeadArgument === -1
-        ? {}
-        : { gitHead: process.argv[gitHeadArgument + 1] ?? throwMissingGitHead() }),
-    });
+    const packageOptions: BuildPackageTarballOptions = { outputDirectory };
+    if (gitHeadArgument !== -1) {
+      packageOptions.gitHead = process.argv[gitHeadArgument + 1] ?? throwMissingGitHead();
+    }
+    const { result, tarball } = await buildPackageTarball(packageOptions);
     const files = result.files.map((file) => `package/${file.path}`).sort();
     const expectedFiles = [
       ...PACKAGE_ROOT_FILES,
@@ -234,23 +263,23 @@ export async function verifyPackage(): Promise<void> {
     const aliasConfigReason =
       'Git aliases supplied through command-line or environment config can hide or execute commands. Run git without Git alias overrides, or ask the user to run it manually.';
     for (const command of ['GIT_CONFIG_COUNT=1025 git status', 'GIT_CONFIG_COUNT=1 git status']) {
-      const output = JSON.parse(
-        run(
-          ['node', cli, 'hook', '--coding-cli'],
-          directory,
-          [0],
-          JSON.stringify({
-            session_id: 'package-verification',
-            cwd: directory,
-            hook_event_name: 'PreToolUse',
-            tool_name: 'Bash',
-            tool_input: { command },
-          }),
-          packageVerificationEnv,
-        ).stdout.toString(),
-      ) as {
-        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
-      };
+      const output = cliHookOutputSchema.parse(
+        JSON.parse(
+          run(
+            ['node', cli, 'hook', '--coding-cli'],
+            directory,
+            [0],
+            JSON.stringify({
+              session_id: 'package-verification',
+              cwd: directory,
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Bash',
+              tool_input: { command },
+            }),
+            packageVerificationEnv,
+          ).stdout.toString(),
+        ),
+      );
       if (
         output.hookSpecificOutput?.permissionDecision !== 'deny' ||
         output.hookSpecificOutput.permissionDecisionReason !==
@@ -335,7 +364,7 @@ function verifyInstalledProtectionJourneys(options: {
   if (cliSafe !== null) throw new Error('Packed CLI blocked git status');
 
   const cliReset = runPackedCliHook(options, 'git reset --hard', 'package-cli-reset');
-  const cliHookOutput = cliReset?.hookSpecificOutput as Record<string, unknown> | undefined;
+  const cliHookOutput = cliReset?.hookSpecificOutput;
   if (
     cliHookOutput?.permissionDecision !== 'deny' ||
     !String(cliHookOutput.permissionDecisionReason).includes('git.reset-hard')
@@ -380,7 +409,7 @@ function verifyInstalledProtectionJourneys(options: {
     ],
   ] as const) {
     const output = runPackedCliHook(options, command, `package-cli-blocked-${name}`);
-    const hookOutput = output?.hookSpecificOutput as Record<string, unknown> | undefined;
+    const hookOutput = output?.hookSpecificOutput;
     if (
       hookOutput?.permissionDecision !== 'deny' ||
       !String(hookOutput.permissionDecisionReason).includes(ruleId)
@@ -394,6 +423,7 @@ function verifyInstalledProtectionJourneys(options: {
     options.pi,
     PI_HOST_SCRIPT,
     integrationToolRequest('package-pi-safe', 'git status'),
+    piHostOutputSchema,
   );
   if (piSafe.result !== null) throw new Error('Packed Pi extension blocked git status');
 
@@ -402,7 +432,8 @@ function verifyInstalledProtectionJourneys(options: {
     options.pi,
     PI_HOST_SCRIPT,
     integrationToolRequest('package-pi-reset', 'git reset --hard'),
-  ).result as { block?: boolean; reason?: string } | undefined;
+    piHostOutputSchema,
+  ).result;
   if (piReset?.block !== true || !piReset.reason?.includes('git.reset-hard')) {
     throw new Error('Packed Pi extension did not block git reset --hard');
   }
@@ -412,6 +443,7 @@ function verifyInstalledProtectionJourneys(options: {
     options.openCode,
     OPENCODE_HOST_SCRIPT,
     openCodeToolRequest('package-opencode-safe', 'git status'),
+    openCodeHostOutputSchema,
   );
   if (openCodeSafe.allowed !== true) throw new Error('Packed OpenCode plugin blocked git status');
 
@@ -420,6 +452,7 @@ function verifyInstalledProtectionJourneys(options: {
     options.openCode,
     OPENCODE_HOST_SCRIPT,
     openCodeToolRequest('package-opencode-reset', 'git reset --hard'),
+    openCodeHostOutputSchema,
   );
   if (openCodeReset.allowed !== false || !String(openCodeReset.reason).includes('git.reset-hard')) {
     throw new Error('Packed OpenCode plugin did not block git reset --hard');
@@ -456,7 +489,7 @@ function runPackedAmpHost(
   );
   if (result.stderr.length > 0)
     throw new Error(`Packed Amp plugin wrote to stderr: ${result.stderr}`);
-  return parsePackedJson('Packed Amp plugin', result.stdout) as Record<string, unknown>;
+  return ampHostOutputSchema.parse(parsePackedJson('Packed Amp plugin', result.stdout));
 }
 
 function runPackedCliHook(
@@ -481,14 +514,15 @@ function runPackedCliHook(
   if (result.stderr.length > 0) throw new Error(`Packed CLI wrote to stderr: ${result.stderr}`);
   return result.stdout.length === 0
     ? null
-    : (parsePackedJson('Packed CLI', result.stdout) as Record<string, unknown>);
+    : cliHookOutputSchema.parse(parsePackedJson('Packed CLI', result.stdout));
 }
 
-function runPackedHost(
+function runPackedHost<Output>(
   options: { directory: string; env: Record<string, string | undefined> },
   bundle: string,
   hostScript: string,
-  input: unknown,
+  input: PackedHostInput,
+  outputSchema: z.ZodType<Output>,
 ) {
   const result = run(
     ['node', '--input-type=module', '--eval', hostScript, bundle],
@@ -499,7 +533,7 @@ function runPackedHost(
   );
   if (result.stderr.length > 0)
     throw new Error(`Packed integration wrote to stderr: ${result.stderr}`);
-  return parsePackedJson('Packed integration', result.stdout) as Record<string, unknown>;
+  return outputSchema.parse(parsePackedJson('Packed integration', result.stdout));
 }
 
 function integrationToolRequest(sessionId: string, command: string) {
@@ -521,14 +555,14 @@ function openCodeToolRequest(sessionId: string, command: string) {
 
 function parsePackedJson(label: string, output: Uint8Array) {
   try {
-    return JSON.parse(output.toString()) as unknown;
+    return JSON.parse(output.toString());
   } catch (error) {
     throw new Error(`${label} returned invalid JSON: ${output}`, { cause: error });
   }
 }
 
 /** @internal */
-export function getPackageVerificationEnv(directory: string): Record<string, string | undefined> {
+export function getPackageVerificationEnv(directory: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     HOME: join(directory, 'home'),
@@ -549,30 +583,35 @@ export async function buildPackageTarball(options: BuildPackageTarballOptions) {
     cpSync('THIRD_PARTY_LICENSES.txt', join(stagingDirectory, 'THIRD_PARTY_LICENSES.txt'));
     cpSync('dist', join(stagingDirectory, 'dist'), { recursive: true });
     chmodSync(join(stagingDirectory, 'dist', 'bin', 'cc-safety-net.js'), 0o755);
-    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as Record<string, unknown>;
+    const manifest = packageManifestSchema.parse(JSON.parse(readFileSync('package.json', 'utf8')));
     delete manifest.gitHead;
-    delete (manifest.scripts as Record<string, unknown>).prepare;
+    delete manifest.scripts.prepare;
     writeFileSync(
       join(stagingDirectory, 'package.json'),
       `${JSON.stringify(options.gitHead ? { ...manifest, gitHead: options.gitHead } : manifest, null, 2)}\n`,
     );
-    const packed = JSON.parse(
-      run([
-        ...(options.npmCommand ?? ['npm']),
-        'pack',
-        stagingDirectory,
-        '--ignore-scripts',
-        '--json',
-        '--pack-destination',
-        options.outputDirectory,
-      ]).stdout.toString(),
-    ) as PackResult[];
+    const packed = z
+      .array(packResultSchema)
+      .parse(
+        JSON.parse(
+          run([
+            ...(options.npmCommand ?? ['npm']),
+            'pack',
+            stagingDirectory,
+            '--ignore-scripts',
+            '--json',
+            '--pack-destination',
+            options.outputDirectory,
+          ]).stdout.toString(),
+        ),
+      );
     const result = packed[0];
     if (!result) throw new Error('npm pack did not report an artifact');
     const tarball = resolve(options.outputDirectory, result.filename);
     const packedManifest = run(['tar', '-xOf', tarball, 'package/package.json']);
-    const actualGitHead = (JSON.parse(packedManifest.stdout.toString()) as { gitHead?: string })
-      .gitHead;
+    const actualGitHead = packageManifestSchema.parse(
+      JSON.parse(packedManifest.stdout.toString()),
+    ).gitHead;
     if (actualGitHead !== options.gitHead) {
       throw new Error(
         `Packed gitHead mismatch: expected ${options.gitHead ?? 'absent'}, found ${actualGitHead ?? 'absent'}`,

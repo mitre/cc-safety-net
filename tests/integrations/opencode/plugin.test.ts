@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Config, PluginInput } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import {
   PATH_CANONICALIZATION_LIMITS,
   PathCanonicalizationLimitError,
@@ -30,19 +32,24 @@ import {
   writeUpdatedGitRulebook,
 } from '../../helpers/rulebook';
 
+type TestToolValue = string | number | boolean | null | undefined | TestToolValue[] | TestToolArgs;
+type TestToolArgs = { [key: string]: TestToolValue };
+type PublicPluginTestInput = {
+  directory: string;
+  safetyNetGuardDependencies: { analyzeCommand: () => null };
+};
+
 type ToolPlugin = {
-  config: (opencodeConfig: Record<string, unknown>) => Promise<void>;
+  config: (opencodeConfig: Config) => Promise<void>;
   'tool.execute.before': (
     input: { tool: string; sessionID?: string },
-    output: { args: Record<string, unknown> },
+    output: { args: TestToolArgs },
   ) => Promise<void>;
 };
 
 function executeBash(plugin: ToolPlugin, command: string, workdir?: string) {
-  return plugin['tool.execute.before'](
-    { tool: 'bash' },
-    { args: { command, ...(workdir ? { workdir } : {}) } },
-  );
+  const args = workdir ? { command, workdir } : { command };
+  return plugin['tool.execute.before']({ tool: 'bash' }, { args });
 }
 
 function executeGitStatus(plugin: ToolPlugin, workdir?: string) {
@@ -116,10 +123,11 @@ describe('OpenCode plugin', () => {
   });
 
   test('ignores attempted guard dependency injection on the production plugin', async () => {
-    const plugin = (await CCSafetyNetPlugin({
+    const input = {
       directory: process.cwd(),
       safetyNetGuardDependencies: { analyzeCommand: () => null },
-    } as never)) as unknown as ToolPlugin;
+    };
+    const plugin = await invokePublicPlugin(input);
 
     await expect(
       plugin['tool.execute.before']({ tool: 'bash' }, { args: { command: 'git reset --hard' } }),
@@ -147,11 +155,7 @@ describe('OpenCode plugin', () => {
   });
 
   test('registers built-in commands without removing existing commands', async () => {
-    const plugin = (await CCSafetyNetPlugin({
-      directory: process.cwd(),
-    } as Parameters<typeof CCSafetyNetPlugin>[0])) as unknown as {
-      config: (opencodeConfig: Record<string, unknown>) => Promise<void>;
-    };
+    const plugin = await createCCSafetyNetPlugin()({ directory: process.cwd() });
     const opencodeConfig = {
       command: {
         existing: { description: 'Existing command', template: 'keep' },
@@ -189,12 +193,13 @@ describe('OpenCode plugin', () => {
   });
 
   test('uses the final shell value after later config mutations', async () => {
-    const plugin = (await CCSafetyNetPlugin({
-      directory: process.cwd(),
-    } as Parameters<typeof CCSafetyNetPlugin>[0])) as unknown as ToolPlugin;
-    const opencodeConfig = { shell: '/bin/bash' };
+    const plugin = z
+      .custom<ToolPlugin>()
+      .parse(await createCCSafetyNetPlugin()({ directory: process.cwd() }));
+    const opencodeConfig: Config = {};
+    Object.assign(opencodeConfig, { shell: '/bin/bash' });
     await plugin.config(opencodeConfig);
-    opencodeConfig.shell = 'pwsh';
+    Object.assign(opencodeConfig, { shell: 'pwsh' });
 
     await expectBashBlock(
       plugin,
@@ -664,7 +669,7 @@ describe('OpenCode plugin', () => {
         const sessionID = `opencode-${label.replaceAll(' ', '-')}`;
 
         await expect(
-          plugin['tool.execute.before']({ ...input, sessionID }, output as never),
+          plugin['tool.execute.before']({ ...input, sessionID }, output),
         ).rejects.toThrow('CC Safety Net failed closed');
 
         expect(readAuditLogEntriesForSession(homeDir, sessionID)).toHaveLength(1);
@@ -774,18 +779,19 @@ describe('OpenCode plugin', () => {
 async function loadToolPlugin(
   directory: string,
   homeDir?: string,
-  shell?: unknown,
+  shell?: string,
   guardDependencies?: Partial<GuardDependencies>,
 ): Promise<ToolPlugin> {
-  const pluginFactory = guardDependencies
-    ? createCCSafetyNetPlugin(guardDependencies)
-    : CCSafetyNetPlugin;
-  const plugin = (await pluginFactory({
-    directory,
-    homeDir,
-  } as unknown as Parameters<typeof CCSafetyNetPlugin>[0])) as unknown as ToolPlugin;
-  await plugin.config(shell === undefined ? {} : { shell });
-  return plugin;
+  const plugin = await createCCSafetyNetPlugin(guardDependencies)({ directory, homeDir });
+  const config: Config = {};
+  if (shell !== undefined) Object.assign(config, { shell });
+  await plugin.config(config);
+  return z.custom<ToolPlugin>().parse(plugin);
+}
+
+async function invokePublicPlugin(input: PublicPluginTestInput): Promise<ToolPlugin> {
+  const pluginInput = z.custom<PluginInput>().parse(input);
+  return z.custom<ToolPlugin>().parse(await CCSafetyNetPlugin(pluginInput));
 }
 
 async function expectBashBlock(plugin: ToolPlugin, command: string, ruleId: string): Promise<void> {
@@ -803,7 +809,7 @@ async function capturePluginErrorMessage(run: () => Promise<void>): Promise<stri
   throw new Error('Expected OpenCode plugin call to throw');
 }
 
-function writeUserPolicy(safetyNetHome: string, policy: unknown): void {
+function writeUserPolicy(safetyNetHome: string, policy: TestToolValue): void {
   mkdirSync(safetyNetHome, { recursive: true });
   writeFileSync(join(safetyNetHome, 'policy.json'), JSON.stringify(policy), 'utf-8');
 }

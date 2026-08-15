@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { z } from 'zod';
 import { assertExactReleaseBase, pushReleaseAtomically } from './release-git';
 import { assertReleaseVersion, classifyReleaseState } from './release-state';
 
@@ -12,6 +13,10 @@ const RELEASE_PATHS = [
   'assets/cc-safety-net.schema.json',
   'dist',
 ] as const;
+
+const manifestVersionSchema = z.object({ version: z.string() });
+const packageNameSchema = z.object({ name: z.string().min(1) });
+const npmMetadataSchema = z.object({ gitHead: z.unknown().optional() });
 
 function runGit(cwd: string, args: string[], allowFailure = false) {
   const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
@@ -27,15 +32,15 @@ function argument(name: string): string {
 }
 
 function manifestVersion(path: string): string {
-  const version = (JSON.parse(readFileSync(path, 'utf8')) as { version?: unknown }).version;
-  if (typeof version === 'string') return version;
+  const manifest = manifestVersionSchema.safeParse(JSON.parse(readFileSync(path, 'utf8')));
+  if (manifest.success) return manifest.data.version;
   throw new Error(`${path} has no string version`);
 }
 
 function committedManifestVersion(cwd: string, path: string): string {
   const result = runGit(cwd, ['show', `HEAD:${path}`]);
-  const version = (JSON.parse(result.stdout.toString()) as { version?: unknown }).version;
-  if (typeof version === 'string') return version;
+  const manifest = manifestVersionSchema.safeParse(JSON.parse(result.stdout.toString()));
+  if (manifest.success) return manifest.data.version;
   throw new Error(`Committed ${path} has no string version`);
 }
 
@@ -61,10 +66,9 @@ async function lookupNpmCommit(
   const response = await fetch(new URL(`${encodeURIComponent(packageName)}/${version}`, base));
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
-  const metadata = (await response.json()) as { gitHead?: unknown };
-  return typeof metadata.gitHead === 'string' && metadata.gitHead !== ''
-    ? metadata.gitHead
-    : 'missing-gitHead';
+  const metadata = npmMetadataSchema.parse(await response.json());
+  const gitHead = z.string().min(1).safeParse(metadata.gitHead);
+  return gitHead.success ? gitHead.data : 'missing-gitHead';
 }
 
 export async function runReleaseTransaction(options: {
@@ -100,14 +104,13 @@ export async function runReleaseTransaction(options: {
     true,
   );
   const tagCommit = tagResult.exitCode === 0 ? tagResult.stdout.toString().trim() : null;
-  const packageName = (
-    JSON.parse(readFileSync(resolve(options.cwd, 'package.json'), 'utf8')) as {
-      name?: unknown;
-    }
-  ).name;
-  if (typeof packageName !== 'string' || packageName === '') {
+  const packageManifest = packageNameSchema.safeParse(
+    JSON.parse(readFileSync(resolve(options.cwd, 'package.json'), 'utf8')),
+  );
+  if (!packageManifest.success) {
     throw new Error('package.json has no package name');
   }
+  const packageName = packageManifest.data.name;
   const npmCommit = await lookupNpmCommit(packageName, version, options.registryUrl);
   const state = classifyReleaseState({
     requestedVersion: version,

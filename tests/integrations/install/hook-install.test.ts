@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { Writable } from 'node:stream';
+import { PassThrough } from 'node:stream';
+import { z } from 'zod';
 import { runInstallCommand } from '@/cli/install';
 import { buildAmpArtifactHeader } from '@/integrations/amp/artifact';
 import { ampArtifactCandidates, resolveAmpArtifactPath } from '@/integrations/amp/install';
@@ -28,6 +29,23 @@ command = "npx -y cc-safety-net hook --kimi-code"`;
 const KIMI_INLINE_HOOK =
   '{ event = "PreToolUse", command = "npx -y cc-safety-net hook --kimi-code" }';
 const ANTIGRAVITY_HOOK_COMMAND = 'npx -y cc-safety-net hook --agy-cli';
+type InstallConfigValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly InstallConfigValue[]
+  | { readonly [key: string]: InstallConfigValue };
+type InstallConfigFixture = { readonly [key: string]: InstallConfigValue };
+const openCodePluginConfigSchema = z.object({ plugin: z.array(z.string()) });
+const cursorConfigSchema = z.looseObject({
+  version: z.json().optional(),
+  hooks: z
+    .looseObject({
+      preToolUse: z.array(z.json()).optional(),
+    })
+    .optional(),
+});
 const COPILOT_INSTALL_COMMANDS = [
   'copilot plugin list',
   'copilot plugin marketplace list',
@@ -119,19 +137,15 @@ function runNativeCli(
   targetFlag: string,
 ) {
   return captureConsoleOutput(({ stdout }) => {
-    const output = new Writable({
-      write(chunk, _encoding, callback) {
-        stdout.push(String(chunk).trim());
-        callback();
-      },
-    });
+    const output = new PassThrough();
+    output.on('data', (chunk) => stdout.push(String(chunk).trim()));
     return withEnv(
       {
         HOME: fake.homeDir,
         PATH: fake.path,
         CC_SAFETY_NET_TEST_COMMAND_LOG: fake.logPath,
       },
-      () => runInstallCommand(action, [targetFlag], { output: output as NodeJS.WriteStream }),
+      () => runInstallCommand(action, [targetFlag], { output }),
     );
   }).then(({ result: exitCode, stdout, stderr }) => ({
     exitCode,
@@ -278,7 +292,7 @@ function expectInstalledKimiInlineHook(
   expect(installed.content).not.toContain('[[hooks]]');
 }
 
-function expectSingleAntigravityHook(config: unknown) {
+function expectSingleAntigravityHook(config: InstallConfigFixture) {
   expect(JSON.stringify(config).match(/cc-safety-net hook --agy-cli/g)?.length).toBe(1);
 }
 
@@ -1318,7 +1332,9 @@ describe('uninstall command', () => {
 
     try {
       const result = await runCli(['uninstall', '--opencode'], '', { HOME: homeDir });
-      const config = JSON.parse(readFileSync(configPath, 'utf-8')) as { plugin: string[] };
+      const config = openCodePluginConfigSchema.parse(
+        JSON.parse(readFileSync(configPath, 'utf-8')),
+      );
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain(`Uninstalled OpenCode plugin from ${configPath}`);
@@ -1582,18 +1598,15 @@ command = "prettier --write"
   });
 });
 
-function writeCursorConfig(homeDir: string, config: unknown): string {
+function writeCursorConfig(homeDir: string, config: InstallConfigFixture): string {
   const configPath = getCursorHooksPath(homeDir);
   mkdirSync(join(configPath, '..'), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   return configPath;
 }
 
-function readCursorConfig(configPath: string): {
-  version?: unknown;
-  hooks?: { preToolUse?: unknown[] } & Record<string, unknown>;
-} & Record<string, unknown> {
-  return JSON.parse(readFileSync(configPath, 'utf-8'));
+function readCursorConfig(configPath: string) {
+  return cursorConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')));
 }
 
 function installAndReadCursorConfig(homeDir: string, configPath: string) {

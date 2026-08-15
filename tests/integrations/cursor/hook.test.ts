@@ -14,7 +14,16 @@ import {
   writeUserPolicy,
 } from '../hook-helpers';
 
-function cursorInput(overrides: Record<string, unknown>) {
+type CursorInputOverrides = Partial<{
+  conversation_id: string;
+  hook_event_name: string;
+  tool_name: string | number;
+  tool_input: { command?: string; working_directory?: string | number };
+  cwd: string;
+  workspace_roots: string[];
+}>;
+
+function cursorInput(overrides: CursorInputOverrides) {
   return {
     conversation_id: 'cursor-test-session',
     hook_event_name: 'preToolUse',

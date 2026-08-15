@@ -3,6 +3,16 @@ import { join } from 'node:path';
 import { getAntigravityHooksPath } from '@/integrations/antigravity/hook';
 import { makeTempHome } from '../hook-helpers';
 
+type InstallFixtureValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly InstallFixtureValue[]
+  | { readonly [key: string]: InstallFixtureValue };
+type InstallFixture = { [key: string]: InstallFixtureValue };
+type InstallFixtureInput = InstallFixture | readonly InstallFixtureValue[];
+
 export function writeClaudePluginRecords(
   homeDir: string,
   pluginIds: readonly string[],
@@ -13,12 +23,16 @@ export function writeClaudePluginRecords(
   } = {},
 ) {
   mkdirSync(join(homeDir, '.claude', 'plugins'), { recursive: true });
+  const pluginRecords = {
+    plugins: Object.fromEntries(pluginIds.map((id) => [id, [{ scope: 'user' }]])),
+  };
   writeFileSync(
     join(homeDir, '.claude', 'plugins', 'installed_plugins.json'),
-    JSON.stringify({
-      ...(options.version === undefined ? {} : { version: options.version }),
-      plugins: Object.fromEntries(pluginIds.map((id) => [id, [{ scope: 'user' }]])),
-    }),
+    JSON.stringify(
+      options.version === undefined
+        ? pluginRecords
+        : { ...pluginRecords, version: options.version },
+    ),
   );
   writeFileSync(
     join(homeDir, '.claude', 'settings.json'),
@@ -30,7 +44,7 @@ export function writeClaudePluginRecords(
   );
 }
 
-export function writeAntigravityConfig(homeDir: string, config: unknown) {
+export function writeAntigravityConfig(homeDir: string, config: InstallFixtureInput) {
   const configPath = getAntigravityHooksPath(homeDir);
   mkdirSync(join(configPath, '..'), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2));

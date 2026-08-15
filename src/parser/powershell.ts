@@ -229,13 +229,15 @@ function scanPowerShellSequence(
       const target =
         targetStart < end ? readPowerShellWord(source, targetStart, end, limits, depth) : undefined;
       const redirectEnd = target?.next ?? operatorEnd;
+      const redirection = {
+        kind: 'redirection' as const,
+        operator: source.slice(i, operatorEnd),
+        span: Object.freeze({ start: i, end: redirectEnd }),
+      };
       accumulator.redirections.push(
-        Object.freeze({
-          kind: 'redirection',
-          operator: source.slice(i, operatorEnd),
-          span: Object.freeze({ start: i, end: redirectEnd }),
-          ...(target ? { target: target.word } : {}),
-        }),
+        target
+          ? Object.freeze({ ...redirection, target: target.word })
+          : Object.freeze(redirection),
       );
       if (target) {
         issues.push(...target.issues);
@@ -593,7 +595,7 @@ function depthLimitIssue(start: number, limit: number): CommandIssue {
   };
 }
 
-function scanSelectorCommands(source: string): { commands: string[][]; invalidComment: boolean } {
+function scanSelectorCommands(source: string) {
   const commands: string[][] = [];
   let words: string[] = [];
   let i = 0;

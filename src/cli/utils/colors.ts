@@ -99,9 +99,8 @@ function getShuffledPalette(seed: number): number[] {
   // Fisher-Yates shuffle
   for (let i = palette.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
-    const temp = palette[i] as number;
-    palette[i] = palette[j] as number;
-    palette[j] = temp;
+    const selected = palette.splice(j, 1, ...palette.slice(i, i + 1));
+    palette.splice(i, 1, ...selected);
   }
   return palette;
 }

@@ -179,12 +179,30 @@ function parsePositionalCarrier(script: string): PositionalCarrier | null {
   );
   const references = (command?.[3] ?? source).split(/\s+/).map(parsePositionalReference);
   if (references.length === 0 || references.some((reference) => reference === null)) return null;
+  const carrier = command?.[1];
   return {
-    command: (command?.[1] as PositionalCarrier['command'] | undefined) ?? null,
+    command: isPositionalCarrierCommand(carrier) ? carrier : null,
     optionTerminator: command?.[2] !== undefined,
     references: references.filter((reference): reference is PositionalReference => !!reference),
     ifs: ifsAssignment ? (ifsAssignment[1] ?? ifsAssignment[2] ?? ifsAssignment[3] ?? '') : ' \t\n',
   };
+}
+
+function isPositionalCarrierCommand(
+  command: string | undefined,
+): command is Exclude<PositionalCarrier['command'], null> {
+  return (
+    command === '.' ||
+    command === 'bash' ||
+    command === 'command' ||
+    command === 'dash' ||
+    command === 'exec' ||
+    command === 'eval' ||
+    command === 'ksh' ||
+    command === 'sh' ||
+    command === 'source' ||
+    command === 'zsh'
+  );
 }
 
 function parsePositionalReference(value: string): PositionalReference | null {

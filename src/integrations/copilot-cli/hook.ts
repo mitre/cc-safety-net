@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   getToolRoute,
   parseHookJson,
@@ -25,6 +26,8 @@ const COPILOT_CLI_COMMAND_TOOLS = new Map<string, CommandToolKind>([
   ['bash', 'auto'],
   ['Bash', 'auto'],
 ]);
+const copilotToolArgsSchema = z.string();
+const copilotSessionIdSchema = z.string().trim().min(1);
 
 /** @internal */
 export function getCopilotCliToolRoute(toolName: string) {
@@ -41,12 +44,13 @@ export async function runCopilotCliHook(): Promise<void> {
     isSupported: () => true,
     getToolName: (input) => input.toolName,
     getToolInput: (input, toolName, outputDeny) => {
-      if (typeof input.toolArgs !== 'string') {
+      const toolArgs = copilotToolArgsSchema.safeParse(input.toolArgs).data;
+      if (!toolArgs) {
         outputDeny({ reason: 'Failed to parse toolArgs JSON.' });
         return { ok: false };
       }
       const toolInput = parseHookJson<unknown>(
-        input.toolArgs,
+        toolArgs,
         outputDeny,
         'Failed to parse toolArgs JSON.',
       );
@@ -55,7 +59,6 @@ export async function runCopilotCliHook(): Promise<void> {
     },
     getContext: (input, toolInput, toolName, outputDeny) =>
       resolveStandardHookContext(input.cwd, toolInput, toolName, outputDeny),
-    getSessionId: (input) =>
-      typeof input.sessionId === 'string' && input.sessionId.trim() ? input.sessionId : undefined,
+    getSessionId: (input) => copilotSessionIdSchema.safeParse(input.sessionId).data,
   });
 }

@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 import { checkForUpdates, isNewerVersion } from '@/cli/doctor/updates';
 import { getAuditLogHomeDir } from '@/engine/facade';
 import { getPackageVersion } from '@/integrations/system-info';
@@ -13,6 +14,12 @@ type UpdateCache = {
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RENOTIFY_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const updateCacheSchema = z.object({
+  lastCheck: z.number().optional(),
+  latestVersion: z.string().optional(),
+  notifiedVersion: z.string().optional(),
+  notifiedAt: z.number().optional(),
+});
 
 export async function getUpdateNotice(now = Date.now()): Promise<string | null> {
   if (process.env.CC_SAFETY_NET_NO_UPDATE_CHECK) return null;
@@ -54,22 +61,20 @@ export async function getUpdateNotice(now = Date.now()): Promise<string | null> 
 // non-finite or future timestamps (JSON's 1e999 parses to Infinity), which
 // would otherwise suppress the poll or the notice indefinitely.
 async function readUpdateCache(path: string, now: number): Promise<UpdateCache> {
-  const value = await readFile(path, 'utf8')
-    .then((json) => JSON.parse(json) as unknown)
+  const parsed = await readFile(path, 'utf8')
+    .then((json) => updateCacheSchema.safeParse(JSON.parse(json)))
     .catch(() => undefined);
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  if (!parsed?.success) return {};
 
-  const record = value as Record<string, unknown>;
-  const timestamp = (candidate: unknown) =>
-    typeof candidate === 'number' && Number.isFinite(candidate) && candidate <= now
+  const timestamp = (candidate: number | undefined) =>
+    candidate !== undefined && Number.isFinite(candidate) && candidate <= now
       ? candidate
       : undefined;
   return {
-    lastCheck: timestamp(record.lastCheck),
-    latestVersion: typeof record.latestVersion === 'string' ? record.latestVersion : undefined,
-    notifiedVersion:
-      typeof record.notifiedVersion === 'string' ? record.notifiedVersion : undefined,
-    notifiedAt: timestamp(record.notifiedAt),
+    lastCheck: timestamp(parsed.data.lastCheck),
+    latestVersion: parsed.data.latestVersion,
+    notifiedVersion: parsed.data.notifiedVersion,
+    notifiedAt: timestamp(parsed.data.notifiedAt),
   };
 }
 

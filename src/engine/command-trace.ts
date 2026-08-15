@@ -9,7 +9,26 @@ import type {
   CommandTraceContext,
   CommandTraceEvent,
   CommandTraceTerminal,
+  TraceStep,
 } from '@/ir/command-trace';
+
+/** @internal */
+export type TraceValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | TraceValue[]
+  | TraceValueObject;
+
+/** @internal */
+export type TraceValueObject = { [key: string]: TraceValue };
+
+type CommandTraceEventInput = Readonly<
+  | { kind: 'step'; scope: 'global'; step: TraceValue }
+  | { kind: 'step'; scope: 'segment'; segmentIndex: number; step: TraceValue }
+>;
 
 type RecorderOptions = {
   maxEvents?: number;
@@ -93,7 +112,7 @@ export function createCommandTraceRecorder(options: RecorderOptions = {}) {
   const sensitiveHashes = new Set<string>();
 
   return {
-    record(event: CommandTraceEvent): void {
+    record(event: CommandTraceEventInput | undefined): void {
       if (result) return;
       try {
         if (!event || events.length >= maxEvents) {
@@ -112,7 +131,7 @@ export function createCommandTraceRecorder(options: RecorderOptions = {}) {
           events: Object.freeze(events),
           droppedEvents,
           terminal: sanitizeTerminal(terminal, limits, sensitiveHashes),
-        }) as CommandTrace;
+        });
       } catch {
         droppedEvents++;
         result = Object.freeze({
@@ -131,7 +150,7 @@ export function createCommandTraceRecorder(options: RecorderOptions = {}) {
 }
 
 function sanitizeEvent(
-  event: CommandTraceEvent,
+  event: CommandTraceEventInput,
   limits: TraversalLimits,
   sensitiveHashes: Set<string>,
 ): CommandTraceEvent {
@@ -139,7 +158,7 @@ function sanitizeEvent(
   const scope = event.scope;
   const step = event.step;
   collectSensitiveHashes(step, sensitiveHashes, limits);
-  const sanitizedStep = sanitizeValue(step, limits, sensitiveHashes) as CommandTraceEvent['step'];
+  const sanitizedStep = sanitizeValue(step, limits, sensitiveHashes);
   if (scope === 'global') return { kind: 'step', scope: 'global', step: sanitizedStep };
   if (scope !== 'segment') throw new TypeError('invalid trace event scope');
   return {
@@ -159,26 +178,27 @@ function sanitizeTerminal(
   if (result === 'allowed') return Object.freeze({ result: 'allowed' });
   if (result !== 'blocked') throw new TypeError('invalid trace terminal');
   const ruleId = terminal.ruleId;
-  return Object.freeze({
+  const sanitized = {
     result: 'blocked',
-    reason: sanitizeValue(terminal.reason, limits, sensitiveHashes) as string,
-    segment: sanitizeValue(terminal.segment, limits, sensitiveHashes) as string,
-    ...(ruleId
-      ? {
-          ruleId: sanitizeValue(ruleId, limits, sensitiveHashes) as string,
-        }
-      : {}),
-  });
+    reason: sanitizeText(terminal.reason, limits, sensitiveHashes),
+    segment: sanitizeText(terminal.segment, limits, sensitiveHashes),
+  } satisfies CommandTraceTerminal;
+  if (ruleId)
+    return Object.freeze({
+      ...sanitized,
+      ruleId: sanitizeText(ruleId, limits, sensitiveHashes),
+    });
+  return Object.freeze(sanitized);
 }
 
 function collectSensitiveHashes(
-  value: unknown,
+  value: TraceValue,
   hashes: Set<string>,
   limits: TraversalLimits,
   depth = 0,
   seen = new WeakSet<object>(),
 ): void {
-  if (typeof value === 'string') {
+  if (isString(value)) {
     const bounded = value.slice(0, limits.maxTextLength);
     if (!mightContainEnvAssignment(bounded)) return;
     for (const assignment of getEnvAssignmentValues(bounded)) {
@@ -186,9 +206,9 @@ function collectSensitiveHashes(
     }
     return;
   }
-  if (!value || typeof value !== 'object' || depth >= limits.maxDepth || seen.has(value)) return;
+  if (!isTraceObject(value) || depth >= limits.maxDepth || seen.has(value)) return;
   seen.add(value);
-  if (Array.isArray(value)) {
+  if (isTraceArray(value)) {
     const length = Math.min(value.length, limits.maxListLength);
     for (let index = 0; index < length; index++) {
       collectSensitiveHashes(value[index], hashes, limits, depth + 1, seen);
@@ -205,29 +225,37 @@ function collectSensitiveHashes(
     const sanitizedKey = sanitizeText(key, limits, hashes);
     if (sanitizedKeys.has(sanitizedKey)) continue;
     sanitizedKeys.add(sanitizedKey);
-    collectSensitiveHashes(
-      (value as Record<string, unknown>)[key],
-      hashes,
-      limits,
-      depth + 1,
-      seen,
-    );
+    collectSensitiveHashes(value[key], hashes, limits, depth + 1, seen);
   }
 }
 
 function sanitizeValue(
-  value: unknown,
+  value: TraceStep,
+  limits: TraversalLimits,
+  sensitiveHashes: ReadonlySet<string>,
+  depth?: number,
+  seen?: WeakSet<object>,
+): TraceStep;
+function sanitizeValue(
+  value: TraceValue,
+  limits: TraversalLimits,
+  sensitiveHashes: ReadonlySet<string>,
+  depth?: number,
+  seen?: WeakSet<object>,
+): TraceStep;
+function sanitizeValue(
+  value: TraceValue,
   limits: TraversalLimits,
   sensitiveHashes: ReadonlySet<string>,
   depth = 0,
   seen = new WeakSet<object>(),
-): unknown {
-  if (typeof value === 'string') return sanitizeText(value, limits, sensitiveHashes);
-  if (!value || typeof value !== 'object') return value;
+): TraceValue {
+  if (isString(value)) return sanitizeText(value, limits, sensitiveHashes);
+  if (!isTraceObject(value)) return value;
   if (depth >= limits.maxDepth) return undefined;
   if (seen.has(value)) return undefined;
   seen.add(value);
-  if (Array.isArray(value)) {
+  if (isTraceArray(value)) {
     const sanitized = [];
     const length = Math.min(value.length, limits.maxListLength);
     for (let index = 0; index < length; index++) {
@@ -235,7 +263,7 @@ function sanitizeValue(
     }
     return sanitized;
   }
-  const sanitized: Record<string, unknown> = {};
+  const sanitized: TraceValueObject = {};
   let retained = 0;
   for (const key in value) {
     if (!Object.hasOwn(value, key)) continue;
@@ -244,13 +272,7 @@ function sanitizeValue(
     const sanitizedKey = sanitizeText(key, limits, sensitiveHashes);
     if (Object.hasOwn(sanitized, sanitizedKey)) continue;
     Object.defineProperty(sanitized, sanitizedKey, {
-      value: sanitizeValue(
-        (value as Record<string, unknown>)[key],
-        limits,
-        sensitiveHashes,
-        depth + 1,
-        seen,
-      ),
+      value: sanitizeValue(value[key], limits, sensitiveHashes, depth + 1, seen),
       enumerable: true,
       configurable: true,
       writable: true,
@@ -308,9 +330,21 @@ function hashText(text: string): string {
 }
 
 function deepFreeze<T>(value: T): T {
-  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+  if (value !== null && value !== undefined && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) deepFreeze(child);
     Object.freeze(value);
   }
   return value;
+}
+
+function isString(value: TraceValue): value is string {
+  return value !== Object(value) && Object.prototype.toString.call(value) === '[object String]';
+}
+
+function isTraceObject(value: TraceValue): value is TraceValueObject | TraceValue[] {
+  return value !== null && Object(value) === value;
+}
+
+function isTraceArray(value: TraceValueObject | TraceValue[]): value is TraceValue[] {
+  return Array.isArray(value);
 }

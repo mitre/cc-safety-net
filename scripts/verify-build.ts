@@ -85,7 +85,7 @@ export async function verifyBuildArtifacts(): Promise<string[]> {
   const files = await listFiles(resolve('dist'));
   const unexpected = files.filter(
     (path) =>
-      !(BUILD_ENTRY_ARTIFACTS as readonly string[]).includes(path) && !isBuildChunkArtifact(path),
+      !BUILD_ENTRY_ARTIFACTS.some((artifact) => artifact === path) && !isBuildChunkArtifact(path),
   );
   const missingEntries = BUILD_ENTRY_ARTIFACTS.filter((path) => !files.includes(path));
   const chunks = files.filter(isBuildChunkArtifact);
@@ -94,7 +94,7 @@ export async function verifyBuildArtifacts(): Promise<string[]> {
   }
 
   const reachableChunks = new Set<string>();
-  const pending = BUILD_ENTRY_ARTIFACTS.filter((path) => path.endsWith('.js')) as string[];
+  const pending: string[] = BUILD_ENTRY_ARTIFACTS.filter((path) => path.endsWith('.js'));
   const missingChunks = new Set<string>();
   while (pending.length > 0) {
     const path = pending.shift();

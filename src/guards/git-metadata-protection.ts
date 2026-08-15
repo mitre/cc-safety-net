@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
+import { z } from 'zod';
 import { findDotGitInAncestors, resolveDotGitFileTargets } from '@/analyzer/git/worktree';
 import {
   createPathCanonicalizationContext,
@@ -64,19 +65,22 @@ export function resolveProtectedGitMetadata(
   cwd: string | undefined,
   context = createPathCanonicalizationContext(createProcessEnvironment()),
 ): ProtectedGitMetadata | null {
-  if (typeof cwd !== 'string' || !cwd) return null;
-  const dotGitPath = findDotGitInAncestors(normalizeProtectedPathCandidate(cwd, cwd, context));
+  const parsedCwd = z.string().min(1).safeParse(cwd);
+  if (!parsedCwd.success) return null;
+  const dotGitPath = findDotGitInAncestors(
+    normalizeProtectedPathCandidate(parsedCwd.data, parsedCwd.data, context),
+  );
   if (!dotGitPath) return null;
 
   try {
-    const entry = normalizeProtectedPathCandidate(dotGitPath, cwd, context);
+    const entry = normalizeProtectedPathCandidate(dotGitPath, parsedCwd.data, context);
     const stat = statSync(dotGitPath);
     const markerFile = stat.isFile() ? entry : null;
     const fileTargets = stat.isFile() ? resolveDotGitFileTargets(dotGitPath) : null;
     const canonicalDirectories = (
       stat.isDirectory() ? [entry] : [fileTargets?.gitDir, fileTargets?.commonDir]
     ).flatMap((path) =>
-      path ? [comparePath(normalizeProtectedPathCandidate(path, cwd, context))] : [],
+      path ? [comparePath(normalizeProtectedPathCandidate(path, parsedCwd.data, context))] : [],
     );
     // A symlinked .git directory canonicalizes to its external target, so keep
     // the lexical entry too — deleting the repository unlinks the control plane.
@@ -97,7 +101,10 @@ export function resolveProtectedGitMetadata(
         ...new Set(
           directories.flatMap((directory) => {
             const lexical = comparePath(join(directory, 'hooks'));
-            return [lexical, comparePath(normalizeProtectedPathCandidate(lexical, cwd, context))];
+            return [
+              lexical,
+              comparePath(normalizeProtectedPathCandidate(lexical, parsedCwd.data, context)),
+            ];
           }),
         ),
       ]),

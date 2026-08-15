@@ -7,6 +7,7 @@ import {
   createSemanticFacts,
   type FactParserDependencies,
   getCommandSyntaxFact,
+  StructuralShellSyntaxLimitError,
 } from '@/guards/semantic-facts';
 import type { ShellKind } from '@/ir/command';
 import { parseCommand } from '@/parser/command';
@@ -289,9 +290,11 @@ describe('semantic facts', () => {
         read();
         throw new Error('Expected structural shell syntax limit');
       } catch (error) {
-        expect((error as Error).constructor.name).toBe('StructuralShellSyntaxLimitError');
-        expect((error as Error).message).toBe('Structural command analysis limit exceeded.');
-        expect((error as Error).message).not.toContain(marker);
+        expect(error).toBeInstanceOf(StructuralShellSyntaxLimitError);
+        if (!(error instanceof Error)) throw error;
+        expect(error.constructor.name).toBe('StructuralShellSyntaxLimitError');
+        expect(error.message).toBe('Structural command analysis limit exceeded.');
+        expect(error.message).not.toContain(marker);
       }
     }
   });

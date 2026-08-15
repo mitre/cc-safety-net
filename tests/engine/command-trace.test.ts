@@ -4,7 +4,11 @@ import { REASON_DERIVED_COMMAND_WORK_LIMIT } from '@/analyzer/derived-command-bu
 import * as gitAnalysis from '@/analyzer/git';
 import { REASON_PARALLEL_ANALYSIS_LIMIT } from '@/analyzer/parallel-budget';
 import { explainCommand } from '@/cli/explain';
-import { createCommandTraceRecorder } from '@/engine/command-trace';
+import {
+  createCommandTraceRecorder,
+  type TraceValue,
+  type TraceValueObject,
+} from '@/engine/command-trace';
 import { evaluateCommandWithTrace } from '@/engine/evaluate-command';
 import { createSemanticFactStore } from '@/guards/semantic-facts';
 import type { CommandTraceTerminal } from '@/ir/command-trace';
@@ -94,9 +98,9 @@ describe('command trace recorder', () => {
 
   test('is total and ignores records after finish', () => {
     const recorder = createCommandTraceRecorder();
-    expect(() => recorder.record(undefined as never)).not.toThrow();
+    expect(() => recorder.record(undefined)).not.toThrow();
     const trace = recorder.finish({ result: 'allowed' });
-    expect(() => recorder.record(undefined as never)).not.toThrow();
+    expect(() => recorder.record(undefined)).not.toThrow();
     expect(recorder.finish({ result: 'blocked', reason: 'later', segment: 'later' })).toBe(trace);
   });
 
@@ -107,7 +111,7 @@ describe('command trace recorder', () => {
       reason: 'r'.repeat(100_000),
       segment: 's'.repeat(100_000),
       ...Object.fromEntries(Array.from({ length: 100_000 }, (_, index) => [`field${index}`, 'x'])),
-    } as CommandTraceTerminal;
+    } satisfies CommandTraceTerminal;
     const trace = recorder.finish(terminal);
 
     expect(trace.terminal).toEqual({ result: 'blocked', reason: 'rrrrrrrr', segment: 'ssssssss' });
@@ -119,14 +123,17 @@ describe('command trace recorder', () => {
       hostileRecorder.record({
         kind: 'step',
         scope: 'global',
-        step: new Proxy({} as never, {
-          ownKeys: () => {
-            throw new Error('hostile event');
+        step: new Proxy<TraceValueObject>(
+          {},
+          {
+            ownKeys: () => {
+              throw new Error('hostile event');
+            },
           },
-        }),
+        ),
       }),
     ).not.toThrow();
-    const hostileGetter = {} as Record<string, unknown>;
+    const hostileGetter: TraceValueObject = {};
     Object.defineProperty(hostileGetter, 'value', {
       enumerable: true,
       get() {
@@ -134,16 +141,25 @@ describe('command trace recorder', () => {
       },
     });
     expect(() =>
-      hostileRecorder.record({ kind: 'step', scope: 'global', step: hostileGetter as never }),
+      hostileRecorder.record({ kind: 'step', scope: 'global', step: hostileGetter }),
     ).not.toThrow();
-    const hostileTerminal = new Proxy({} as CommandTraceTerminal, {
-      get: () => {
-        throw new Error('hostile terminal');
+    const stringTagged: TraceValueObject = { [Symbol.toStringTag]: 'String' };
+    expect(() =>
+      hostileRecorder.record({ kind: 'step', scope: 'global', step: stringTagged }),
+    ).not.toThrow();
+    const hostileTerminal = new Proxy<CommandTraceTerminal>(
+      { result: 'allowed' },
+      {
+        get: () => {
+          throw new Error('hostile terminal');
+        },
       },
-    });
+    );
     expect(() => hostileRecorder.finish(hostileTerminal)).not.toThrow();
     const fallback = hostileRecorder.finish(hostileTerminal);
-    expect(fallback.events).toEqual([]);
+    expect(JSON.stringify(fallback.events)).toBe(
+      JSON.stringify([{ kind: 'step', scope: 'global', step: {} }]),
+    );
     expect(fallback.droppedEvents).toBe(3);
     expect(fallback.terminal).toEqual({
       result: 'blocked',
@@ -157,8 +173,8 @@ describe('command trace recorder', () => {
   test('bounds traversal work for getter-backed arrays and objects', () => {
     let arrayReads = 0;
     let objectReads = 0;
-    const values: unknown[] = [];
-    const fields: Record<string, unknown> = {};
+    const values: TraceValue[] = [];
+    const fields: TraceValueObject = {};
     for (let index = 0; index < 10_000; index++) {
       Object.defineProperty(values, index, {
         enumerable: true,
@@ -183,12 +199,8 @@ describe('command trace recorder', () => {
       maxTextLength: 32,
     });
     const started = performance.now();
-    expect(() =>
-      recorder.record({ kind: 'step', scope: 'global', step: values as never }),
-    ).not.toThrow();
-    expect(() =>
-      recorder.record({ kind: 'step', scope: 'global', step: fields as never }),
-    ).not.toThrow();
+    expect(() => recorder.record({ kind: 'step', scope: 'global', step: values })).not.toThrow();
+    expect(() => recorder.record({ kind: 'step', scope: 'global', step: fields })).not.toThrow();
     const trace = recorder.finish({ result: 'allowed' });
 
     expect(arrayReads).toBeLessThanOrEqual(4);
@@ -199,14 +211,12 @@ describe('command trace recorder', () => {
   });
 
   test('bounds cyclic and over-depth event values without dropping the event', () => {
-    const cyclic: Record<string, unknown> = { value: 'safe' };
+    const cyclic: TraceValueObject = { value: 'safe' };
     cyclic.self = cyclic;
     cyclic.child = { child: { child: { value: 'too-deep' } } };
     const recorder = createCommandTraceRecorder({ maxDepth: 2 });
 
-    expect(() =>
-      recorder.record({ kind: 'step', scope: 'global', step: cyclic as never }),
-    ).not.toThrow();
+    expect(() => recorder.record({ kind: 'step', scope: 'global', step: cyclic })).not.toThrow();
     const trace = recorder.finish({ result: 'allowed' });
 
     expect(trace.events).toHaveLength(1);
@@ -225,16 +235,19 @@ describe('command trace recorder', () => {
         ghp_abcdefghijklmnopqrstuvwxyz: 'first-retained',
         npm_abcdefghijklmnopqrstuvwxyz: 'second-discarded',
         NORMAL_ENV: 'preserved',
-      } as never,
+      },
     });
     const trace = recorder.finish({ result: 'allowed' });
-    const step = trace.events[0]?.step as unknown as Record<string, unknown>;
+    const step = trace.events[0]?.step;
 
-    expect(step).toEqual({
-      type: 'parse',
-      '<redacted>': 'first-retained',
-      NORMAL_ENV: 'preserved',
-    });
+    expect(JSON.stringify(step)).toBe(
+      JSON.stringify({
+        type: 'parse',
+        '<redacted>': 'first-retained',
+        NORMAL_ENV: 'preserved',
+      }),
+    );
+    if (!step) throw new Error('expected a retained trace step');
     expect(Object.keys(step)).toEqual(['type', '<redacted>', 'NORMAL_ENV']);
     expect(JSON.stringify(trace)).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz');
     expect(JSON.stringify(trace)).not.toContain('npm_abcdefghijklmnopqrstuvwxyz');
@@ -244,13 +257,10 @@ describe('command trace recorder', () => {
     bounded.record({
       kind: 'step',
       scope: 'global',
-      step: { type: 'parse', [`ordinary-${'x'.repeat(10_000)}`]: 'safe' } as never,
+      step: { type: 'parse', [`ordinary-${'x'.repeat(10_000)}`]: 'safe' },
     });
-    const boundedStep = bounded.finish({ result: 'allowed' }).events[0]?.step as unknown as Record<
-      string,
-      unknown
-    >;
-    expect(boundedStep).toEqual({ type: 'parse', ordinary: 'safe' });
+    const boundedStep = bounded.finish({ result: 'allowed' }).events[0]?.step;
+    expect(JSON.stringify(boundedStep)).toBe(JSON.stringify({ type: 'parse', ordinary: 'safe' }));
     expect(JSON.stringify(boundedStep).length).toBeLessThan(100);
   });
 

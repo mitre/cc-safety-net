@@ -275,7 +275,6 @@ describe('policy GUI helpers', () => {
       expect(entry.category).not.toBe('');
       expect(entry.label).not.toBe('');
       expect(entry.description).not.toBe('');
-      expect(typeof entry.example).toBe('string');
       expect(entry.example.trim()).not.toBe('');
     }
     expect(

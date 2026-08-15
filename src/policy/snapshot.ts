@@ -10,6 +10,17 @@ import type { LoadedRulesPolicy, RulesPolicyOptions } from '@/rules/policy/types
 
 export type PolicySnapshotOptions = RulesPolicyOptions;
 
+type NormalizedSafety = {
+  level?: EffectivePolicy['safety']['level'];
+  overrides?: NormalizedSafetyOverrides;
+};
+
+type NormalizedSafetyOverrides = {
+  failClosed?: boolean;
+  paranoidRm?: boolean;
+  paranoidInterpreters?: boolean;
+};
+
 /**
  * Loads the effective runtime policy from local configuration, lockfiles, and
  * verified rulebook cache entries. This function performs no writes, network
@@ -34,29 +45,23 @@ export function loadPolicySnapshot(options: PolicySnapshotOptions = {}): PolicyS
   };
 
   const overrides = {
-    ...(rules.userConfig?.overrides ?? {}),
-    ...(rules.projectConfig?.overrides ?? {}),
+    ...rules.userConfig?.overrides,
+    ...rules.projectConfig?.overrides,
   };
   const ruleMetadata = Object.freeze(
     Object.fromEntries(
       policy.rules.map((rule): [string, CustomRuleMetadata] => {
         const rulebook = rules.rulebooks.find((item) => item.rules.includes(rule.name));
         const override = overrides[rule.name];
-        return [
-          rule.name,
-          Object.freeze({
-            id: rule.name,
-            ...(rulebook
-              ? {
-                  rulebook: Object.freeze({ name: rulebook.name, version: rulebook.version }),
-                  ...(isPublicRuleSource(rulebook.spec) ? { source: rulebook.spec } : {}),
-                }
-              : {}),
-            ...(override && typeof override === 'object'
-              ? { override: Object.freeze({ type: 'reason' as const, reason: override.reason }) }
-              : {}),
-          }),
-        ];
+        const metadata: CustomRuleMetadata = { id: rule.name };
+        if (rulebook) {
+          metadata.rulebook = Object.freeze({ name: rulebook.name, version: rulebook.version });
+          if (isPublicRuleSource(rulebook.spec)) metadata.source = rulebook.spec;
+        }
+        if (override && override !== 'off') {
+          metadata.override = Object.freeze({ type: 'reason', reason: override.reason });
+        }
+        return [rule.name, Object.freeze(metadata)];
       }),
     ),
   );
@@ -148,23 +153,22 @@ export function createPolicySnapshot(
 
 function normalizeSafety(safety: ReturnType<typeof loadPolicyConfig>['safety']) {
   const overrides = safety.overrides;
-  const normalizedOverrides = {
-    ...(overrides?.failClosed !== undefined ? { failClosed: overrides.failClosed } : {}),
-    ...(overrides?.paranoidRm !== undefined ? { paranoidRm: overrides.paranoidRm } : {}),
-    ...(overrides?.paranoidInterpreters !== undefined
-      ? { paranoidInterpreters: overrides.paranoidInterpreters }
-      : {}),
-  };
-  return {
-    ...(safety.level !== undefined ? { level: safety.level } : {}),
-    ...(Object.keys(normalizedOverrides).length > 0 ? { overrides: normalizedOverrides } : {}),
-  };
+  const normalizedOverrides: NormalizedSafetyOverrides = {};
+  if (overrides?.failClosed !== undefined) normalizedOverrides.failClosed = overrides.failClosed;
+  if (overrides?.paranoidRm !== undefined) normalizedOverrides.paranoidRm = overrides.paranoidRm;
+  if (overrides?.paranoidInterpreters !== undefined)
+    normalizedOverrides.paranoidInterpreters = overrides.paranoidInterpreters;
+
+  const normalized: NormalizedSafety = {};
+  if (safety.level !== undefined) normalized.level = safety.level;
+  if (Object.keys(normalizedOverrides).length > 0) normalized.overrides = normalizedOverrides;
+  return normalized;
 }
 
 // Freezes every reachable container so a new policy field can never ship mutable by omission.
 function deepFreeze<T>(value: T): T {
-  if (typeof value !== 'object' || value === null) return value;
-  for (const child of Object.values(value)) deepFreeze(child);
+  if (value === null || Object(value) !== value || value instanceof Function) return value;
+  for (const child of Object.values(Object(value))) deepFreeze(child);
   return Object.freeze(value);
 }
 

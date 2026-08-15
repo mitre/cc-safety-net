@@ -1,28 +1,32 @@
+import { z } from 'zod';
 import { formatSchemaIssues, getRulesLockfileSchema } from '@/policy/schema';
 import {
   bindDelegatedPolicyFilesystemTarget,
+  isPolicyFilesystemTarget,
   PolicyFilesystemError,
   type PolicyFilesystemTarget,
   readPolicyFile,
 } from './filesystem';
 import { getRulebookLockEntrySourceIdentityError } from './sources';
-import type { RulebookLockEntry, RulesLockfile } from './types';
+import type { RulesLockfile } from './types';
 
-export function readLockfile(path: string | PolicyFilesystemTarget): {
+interface LockfileReadResult {
   lock: RulesLockfile | null;
   errors: string[];
-} {
-  const displayPath = typeof path === 'string' ? path : path.path;
+}
+
+export function readLockfile(path: string | PolicyFilesystemTarget): LockfileReadResult {
+  const target = isPolicyFilesystemTarget(path) ? path : bindDelegatedPolicyFilesystemTarget(path);
+  const displayPath = isPolicyFilesystemTarget(path) ? path.path : path;
   try {
-    const content = readPolicyFile(
-      typeof path === 'string' ? bindDelegatedPolicyFilesystemTarget(path) : path,
-    );
+    const content = readPolicyFile(target);
     if (content === null) return { lock: null, errors: [] };
-    const document = JSON.parse(content) as unknown;
-    if (!document || typeof document !== 'object') {
+    const document = z.json().parse(JSON.parse(content));
+    const lockDocument = z.record(z.string(), z.json()).safeParse(document);
+    if (!lockDocument.success) {
       return { lock: null, errors: [`malformed lockfile ${displayPath}: must be an object`] };
     }
-    const lock = document as Record<string, unknown>;
+    const lock = lockDocument.data;
     if (lock.version !== 1 || !Array.isArray(lock.rulebooks)) {
       return { lock: null, errors: [`malformed lockfile ${displayPath}`] };
     }
@@ -37,7 +41,33 @@ export function readLockfile(path: string | PolicyFilesystemTarget): {
         return formatSchemaIssues(issues).map((error) => `${displayPath}: ${error}`);
       }
       // An entry the schema left unflagged is a lock entry, even when a sibling failed.
-      const identityError = getRulebookLockEntrySourceIdentityError(entry as RulebookLockEntry);
+      const parsedEntry = getRulesLockfileSchema().safeParse({ rulebooks: [entry] });
+      if (!parsedEntry.success) return [];
+      const entryData = parsedEntry.data.rulebooks[0];
+      if (!entryData) return [];
+      const validatedEntry =
+        entryData.kind === 'local-directory'
+          ? {
+              spec: entryData.spec,
+              kind: entryData.kind,
+              path: entryData.path,
+              name: entryData.name,
+              version: entryData.version,
+              digest: entryData.digest,
+            }
+          : {
+              spec: entryData.spec,
+              kind: entryData.kind,
+              owner: entryData.owner,
+              repo: entryData.repo,
+              ref: entryData.ref,
+              commit: entryData.commit,
+              path: entryData.path,
+              name: entryData.name,
+              version: entryData.version,
+              digest: entryData.digest,
+            };
+      const identityError = getRulebookLockEntrySourceIdentityError(validatedEntry);
       return identityError ? [`${displayPath}: rulebooks[${index}]: ${identityError}`] : [];
     });
     if (!parsed.success || entryErrors.length > 0) {
@@ -68,8 +98,9 @@ export function readLockfile(path: string | PolicyFilesystemTarget): {
         version: entry.version,
         digest: entry.digest,
       };
-      return typeof entry.display_ref === 'string' && entry.display_ref !== ''
-        ? { ...github, display_ref: entry.display_ref }
+      const displayRef = z.string().safeParse(entry.display_ref);
+      return displayRef.success && displayRef.data !== ''
+        ? { ...github, display_ref: displayRef.data }
         : github;
     });
     return { lock: { version: 1, rulebooks }, errors: [] };

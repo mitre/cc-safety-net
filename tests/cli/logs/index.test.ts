@@ -13,11 +13,20 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { writeAuditLog } from '@/engine/audit';
-import type { AuditLogEntry } from '@/ir/audit';
 import { withEnv, writeJsonlFixture, writeNestedAuditLogFixture } from '../../helpers';
 import { writeDeniedLogFixture } from '../../helpers/denied-log-fixture';
 import { captureLogsCommand } from '../../helpers/logs';
+
+const auditLogOutputSchema = z.array(
+  z.looseObject({
+    ts: z.string(),
+    command: z.string(),
+    segment: z.string(),
+    cwd: z.string().nullable().optional(),
+  }),
+);
 
 type LogsFixture = {
   cleanup: () => void;
@@ -214,7 +223,7 @@ describe('runLogsCommand', () => {
 
       expect(table.stdout).toContain(`${day} 10:42`);
       expect(detail.stdout).toContain(`ts:        ${day} 10:42`);
-      expect((JSON.parse(json.stdout) as AuditLogEntry[])[0]?.ts).toBe(ts);
+      expect(auditLogOutputSchema.parse(JSON.parse(json.stdout))[0]?.ts).toBe(ts);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -331,7 +340,7 @@ describe('runLogsCommand', () => {
     const fixture = createLogsFixture();
     try {
       const result = await captureLogsCommand(['--agent', 'gemini-cli', '--json'], fixture.logsDir);
-      const entries = JSON.parse(result.stdout) as AuditLogEntry[];
+      const entries = auditLogOutputSchema.parse(JSON.parse(result.stdout));
 
       expect(entries.length).toBe(1);
       expect(entries[0]?.command).toBe('cat .env');
@@ -411,7 +420,7 @@ describe('runLogsCommand', () => {
       expect(table.stdout).not.toContain('x'.repeat(51));
       expect(table.stdout).not.toContain('complete-tail');
       expect(detail.stdout).toContain(command);
-      expect((JSON.parse(json.stdout) as AuditLogEntry[])[0]?.command).toBe(command);
+      expect(auditLogOutputSchema.parse(JSON.parse(json.stdout))[0]?.command).toBe(command);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -668,7 +677,7 @@ describe('runLogsCommand', () => {
           sessionId: control,
           decision: `deny${control}`,
           agent: control,
-          shape: control,
+          ['shape']: control,
           toolName: control,
           command: '',
           segment: '',
@@ -706,7 +715,7 @@ describe('runLogsCommand', () => {
       expect(human.stdout).not.toContain('output-canary');
 
       const json = await captureLogsCommand(['--json'], logsDir);
-      const entries = JSON.parse(json.stdout) as AuditLogEntry[];
+      const entries = auditLogOutputSchema.parse(JSON.parse(json.stdout));
       expect(json.exitCode).toBe(0);
       expect(json.stdout).not.toContain('output-canary');
       expect(entries[0]?.command).toBe('curl -H \'{"Authorization":"<redacted>"}\'');
@@ -749,7 +758,7 @@ describe('runLogsCommand', () => {
       writeControlLogFixture(logsDir, command, cwd);
 
       const result = await captureLogsCommand(['--json'], logsDir);
-      const entries = JSON.parse(result.stdout) as AuditLogEntry[];
+      const entries = auditLogOutputSchema.parse(JSON.parse(result.stdout));
 
       expect(result.exitCode).toBe(0);
       expect(entries[0]?.command).toBe(command);
@@ -993,10 +1002,10 @@ describe('runLogsCommand --prune-legacy', () => {
     const blocked = join(fixture.logsDir, 'malformed.jsonl');
     const blockedBytes = statSync(blocked).size;
     const real = fs.unlinkSync;
-    const spy = spyOn(fs, 'unlinkSync').mockImplementation(((path: string) => {
+    const spy = spyOn(fs, 'unlinkSync').mockImplementation((path) => {
       if (path === blocked) throw new Error('EACCES: permission denied');
       real(path);
-    }) as typeof fs.unlinkSync);
+    });
     try {
       const result = await captureLogsCommand(['--prune-legacy'], fixture.logsDir);
 

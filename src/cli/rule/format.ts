@@ -60,7 +60,7 @@ export function printRulesListReport(
   ]);
   printListSection('Reason overrides', getMergedOverrides(policy, 'reason'), (override) => [
     override.key,
-    `  Reason: ${(override.value as { reason: string }).reason}`,
+    `  Reason: ${override.value.reason}`,
   ]);
   printListSection('Transparent wrappers', policy.transparent_wrappers, (wrapper) => [wrapper]);
   printListSection('Issues', policy.errors, (error) => [error]);
@@ -88,15 +88,20 @@ function getRuleSource(policy: LoadedRulesPolicy, ruleName: string): 'user' | 'p
 
 function getMergedOverrides(
   policy: LoadedRulesPolicy,
-  kind: 'off' | 'reason',
-): Array<{ key: string; value: RuleOverride }> {
+  kind: 'off',
+): Array<{ key: string; value: 'off' }>;
+function getMergedOverrides(
+  policy: LoadedRulesPolicy,
+  kind: 'reason',
+): Array<{ key: string; value: Exclude<RuleOverride, 'off'> }>;
+function getMergedOverrides(policy: LoadedRulesPolicy, kind: 'off' | 'reason') {
   return Object.entries({
-    ...(policy.userConfig?.overrides ?? {}),
-    ...(policy.projectConfig?.overrides ?? {}),
+    ...policy.userConfig?.overrides,
+    ...policy.projectConfig?.overrides,
   })
-    .filter((entry): entry is [string, RuleOverride] => {
+    .filter((entry) => {
       if (kind === 'off') return entry[1] === 'off';
-      return !!entry[1] && typeof entry[1] === 'object';
+      return entry[1] !== 'off';
     })
     .map(([key, value]) => ({ key, value }));
 }

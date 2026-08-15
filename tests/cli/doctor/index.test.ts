@@ -2,10 +2,24 @@ import { describe, expect, spyOn, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { runDoctor } from '@/cli/doctor';
 import * as hookDetection from '@/integrations/detect';
 import * as selfTest from '@/integrations/self-test';
 import { withEnv, withTempDir } from '../../helpers.ts';
+
+const doctorReportSchema = z
+  .object({
+    engineSelfTest: z.object({ passed: z.number(), failed: z.number(), total: z.number() }).loose(),
+    posture: z.object({ directories: z.array(z.unknown()) }).loose(),
+    findings: z.array(z.unknown()),
+    hooks: z.array(z.object({ platform: z.string(), inspectionStatus: z.string() }).loose()),
+    configState: z.discriminatedUnion('state', [
+      z.object({ state: z.literal('ready') }),
+      z.object({ state: z.literal('degraded'), reason: z.string() }),
+    ]),
+  })
+  .loose();
 
 function captureConsoleLog() {
   const output: string[] = [];
@@ -58,7 +72,7 @@ describe('doctor report verification ownership', () => {
 
         expect(exitCode).toBe(1);
         expect(runSelfTest).toHaveBeenCalledTimes(1);
-        const report = JSON.parse(captured.output.join('\n')) as Record<string, unknown>;
+        const report = doctorReportSchema.parse(JSON.parse(captured.output.join('\n')));
         expect(report.engineSelfTest).toMatchObject({ passed: 2, failed: 1, total: 3 });
         expect(report.posture).toHaveProperty('directories');
         expect(report.findings).toEqual(
@@ -67,13 +81,13 @@ describe('doctor report verification ownership', () => {
           ]),
         );
         expect(report.hooks).toBeArray();
-        for (const hook of report.hooks as Record<string, unknown>[]) {
+        for (const hook of report.hooks) {
           expect(hook).not.toHaveProperty('selfTest');
           expect(hook).toHaveProperty('detected');
           expect(hook).toHaveProperty('configured');
         }
         expect(
-          (report.hooks as Record<string, unknown>[]).map((hook) => ({
+          report.hooks.map((hook) => ({
             platform: hook.platform,
             inspectionStatus: hook.inspectionStatus,
           })),
@@ -130,7 +144,7 @@ describe('doctor report verification ownership', () => {
           },
           () => runDoctor({ cwd, json: true, skipUpdateCheck: true }),
         );
-        const report = JSON.parse(captured.output.join('\n')) as { findings: unknown[] };
+        const report = doctorReportSchema.parse(JSON.parse(captured.output.join('\n')));
 
         captured.output.length = 0;
         const humanExit = await withoutTtyStdout(() =>
@@ -171,12 +185,10 @@ describe('doctor report verification ownership', () => {
         await withEnv({ HOME: cwd, PATH: '' }, () =>
           runDoctor({ cwd, json: true, skipUpdateCheck: true }),
         );
-        const report = JSON.parse(captured.output.join('\n')) as {
-          configState: { state: string; reason: string };
-          findings: unknown[];
-        };
+        const report = doctorReportSchema.parse(JSON.parse(captured.output.join('\n')));
 
         expect(report.configState.state).toBe('degraded');
+        if (report.configState.state !== 'degraded') throw new Error('Expected degraded config');
         // The reason carries the failing file, the rejected condition, and what is
         // no longer active through to the finding detail.
         expect(report.configState.reason).toContain('Those rule sources are not active');
@@ -185,7 +197,7 @@ describe('doctor report verification ownership', () => {
             expect.objectContaining({
               checkId: 'config.runtime-degraded',
               severity: 'warning',
-              detail: expect.stringContaining('Those rule sources are not active') as string,
+              detail: expect.stringContaining('Those rule sources are not active'),
             }),
           ]),
         );

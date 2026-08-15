@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { z } from 'zod';
 import { getAntigravityHooksPath } from '@/integrations/antigravity/hook';
 import { atomicWriteFile } from '@/integrations/install/atomic-write';
 import type { InstallResult } from '@/integrations/install/types';
@@ -7,26 +8,23 @@ import type { InstallResult } from '@/integrations/install/types';
 const ANTIGRAVITY_HOOK_COMMAND = 'npx -y cc-safety-net hook --agy-cli';
 const MANAGED_HOOK_NAME = 'cc-safety-net';
 
-type AntigravityHookHandler = {
-  type?: string;
-  command?: string;
-  timeout?: number;
-};
+const hookHandlerSchema = z.object({ command: z.json().optional() }).catchall(z.json());
+const hookHandlersSchema = z.array(hookHandlerSchema);
+const preToolUseEntrySchema = z.object({ hooks: z.json().optional() }).catchall(z.json());
+const preToolUseSchema = z.array(preToolUseEntrySchema);
+const hookDefinitionSchema = z
+  .object({
+    enabled: z.json().optional(),
+    PreToolUse: z.json().optional(),
+  })
+  .catchall(z.json());
+const hooksConfigSchema = z.record(z.string(), z.json());
+const commandSchema = z.string();
 
-type AntigravityPreToolUseEntry = {
-  hooks?: AntigravityHookHandler[];
-  [key: string]: unknown;
-};
+type AntigravityHookDefinition = z.infer<typeof hookDefinitionSchema>;
+type AntigravityHooksConfig = z.infer<typeof hooksConfigSchema>;
 
-type AntigravityHookDefinition = {
-  enabled?: boolean;
-  PreToolUse?: AntigravityPreToolUseEntry[];
-  [key: string]: unknown;
-};
-
-type AntigravityHooksConfig = Record<string, AntigravityHookDefinition>;
-
-function managedHookEntry(): AntigravityHookDefinition {
+function managedHookEntry() {
   return {
     PreToolUse: [
       {
@@ -44,11 +42,11 @@ function managedHookEntry(): AntigravityHookDefinition {
 
 function parseAntigravityHooksConfig(configPath: string): AntigravityHooksConfig {
   try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    const config = hooksConfigSchema.safeParse(JSON.parse(readFileSync(configPath, 'utf-8')));
+    if (!config.success) {
       throw new Error('Antigravity hooks config must be a JSON object');
     }
-    return config as AntigravityHooksConfig;
+    return config.data;
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`Failed to parse Antigravity hooks config ${configPath}: ${error.message}`);
@@ -64,30 +62,41 @@ function getManagedHookDefinition(config: AntigravityHooksConfig): AntigravityHo
     return config[MANAGED_HOOK_NAME];
   }
 
-  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+  const parsed = hookDefinitionSchema.safeParse(existing);
+  if (!parsed.success) {
     throw new Error(`Antigravity hooks config entry "${MANAGED_HOOK_NAME}" must be an object`);
   }
 
-  if (!Array.isArray(existing.PreToolUse)) {
-    existing.PreToolUse = [];
-  }
-  return existing;
+  const preToolUse = preToolUseSchema.safeParse(parsed.data.PreToolUse);
+  parsed.data.PreToolUse = preToolUse.success ? preToolUse.data : [];
+  config[MANAGED_HOOK_NAME] = parsed.data;
+  return parsed.data;
 }
 
 function hasManagedHookCommand(definition: AntigravityHookDefinition): boolean {
-  if (!Array.isArray(definition.PreToolUse)) return false;
+  const entries = preToolUseSchema.safeParse(definition.PreToolUse);
+  if (!entries.success) return false;
 
-  return definition.PreToolUse.some(
-    (entry) =>
-      Array.isArray(entry.hooks) &&
-      entry.hooks.some((hook) => hook.command === ANTIGRAVITY_HOOK_COMMAND),
-  );
+  return entries.data.some((entry) => {
+    const hooks = hookHandlersSchema.safeParse(entry.hooks);
+    return (
+      hooks.success &&
+      hooks.data.some(
+        (hook) => commandSchema.safeParse(hook.command).data === ANTIGRAVITY_HOOK_COMMAND,
+      )
+    );
+  });
 }
 
 function hasActiveManagedHook(config: AntigravityHooksConfig): boolean {
-  return Object.values(config).some(
-    (definition) => definition.enabled !== false && hasManagedHookCommand(definition),
-  );
+  return Object.values(config).some((value) => {
+    const definition = hookDefinitionSchema.safeParse(value);
+    return (
+      definition.success &&
+      definition.data.enabled !== false &&
+      hasManagedHookCommand(definition.data)
+    );
+  });
 }
 
 function enableManagedHookDefinition(config: AntigravityHooksConfig): boolean {
@@ -107,23 +116,31 @@ function appendManagedHook(config: AntigravityHooksConfig): void {
   }
 
   const definition = getManagedHookDefinition(config);
-  definition.PreToolUse ??= [];
+  const preToolUse = preToolUseSchema.parse(definition.PreToolUse);
   definition.enabled = true;
-  definition.PreToolUse.push(managedHookEntry().PreToolUse?.[0] ?? { hooks: [] });
+  preToolUse.push(preToolUseEntrySchema.parse(managedHookEntry().PreToolUse[0]));
+  definition.PreToolUse = preToolUse;
 }
 
 function removeManagedHook(config: AntigravityHooksConfig): boolean {
   let removed = false;
-  for (const definition of Object.values(config)) {
-    if (!Array.isArray(definition.PreToolUse)) continue;
-    definition.PreToolUse = definition.PreToolUse.flatMap((entry) => {
-      if (!Array.isArray(entry.hooks)) return [entry];
+  Object.entries(config).forEach(([name, value]) => {
+    const definition = hookDefinitionSchema.safeParse(value);
+    if (!definition.success) return;
+    const entries = preToolUseSchema.safeParse(definition.data.PreToolUse);
+    if (!entries.success) return;
+    definition.data.PreToolUse = entries.data.flatMap((entry) => {
+      const parsedHooks = hookHandlersSchema.safeParse(entry.hooks);
+      if (!parsedHooks.success) return [entry];
 
-      const hooks = entry.hooks.filter((hook) => hook.command !== ANTIGRAVITY_HOOK_COMMAND);
-      if (hooks.length !== entry.hooks.length) removed = true;
+      const hooks = parsedHooks.data.filter(
+        (hook) => commandSchema.safeParse(hook.command).data !== ANTIGRAVITY_HOOK_COMMAND,
+      );
+      if (hooks.length !== parsedHooks.data.length) removed = true;
       return hooks.length === 0 ? [] : [{ ...entry, hooks }];
     });
-  }
+    config[name] = definition.data;
+  });
   return removed;
 }
 

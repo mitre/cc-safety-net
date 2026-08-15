@@ -1,4 +1,5 @@
 import { dirname } from 'node:path';
+import { z } from 'zod';
 import type { CustomRule } from '@/ir/policy';
 import { assertValidRulebook, type Rulebook } from '@/rules/rulebook';
 import { readRulesConfig } from './config-file';
@@ -38,6 +39,11 @@ interface ScopePolicy {
   errors: string[];
   warnings: string[];
   canValidateOverrides: boolean;
+}
+
+interface LockedRulebookReadResult {
+  rulebook: Rulebook | null;
+  errors: string[];
 }
 
 export function loadRulesPolicy(options: RulesPolicyOptions = {}): LoadedRulesPolicy {
@@ -294,7 +300,7 @@ function loadLockedRulebook(
   configDir: string,
   options: RulesPolicyOptions,
   filesystemScope: PolicyFilesystemScope,
-): { rulebook: Rulebook | null; errors: string[] } {
+): LockedRulebookReadResult {
   const cachePath = getRulebookCachePath(entry, getRulebookCacheOptions(configDir, options));
   let cacheContent: string | null;
   try {
@@ -318,14 +324,15 @@ function loadLockedRulebook(
       errors: [`cache digest mismatch for ${entry.spec}; run ${RULE_SYNC_COMMAND}`],
     };
   }
-  let parsed: unknown;
+  let parsed: z.infer<ReturnType<typeof z.json>>;
   try {
-    parsed = JSON.parse(cacheContent) as unknown;
+    parsed = z.json().parse(JSON.parse(cacheContent));
   } catch {
     return { rulebook: null, errors: [`invalid cached rulebook for ${entry.spec}`] };
   }
+  let rulebook: Rulebook;
   try {
-    assertValidRulebook(parsed);
+    rulebook = assertValidRulebook(parsed);
   } catch (error) {
     return {
       rulebook: null,
@@ -334,7 +341,7 @@ function loadLockedRulebook(
       ],
     };
   }
-  return { rulebook: parsed as Rulebook, errors: [] };
+  return { rulebook, errors: [] };
 }
 
 function mergeTransparentWrappers(
@@ -358,7 +365,7 @@ function applyOverrides(
     if (override === 'off') {
       return [];
     }
-    if (override && typeof override === 'object') {
+    if (override) {
       return [{ ...rule, intent: override.intent ?? rule.intent, reason: override.reason }];
     }
     return [rule];

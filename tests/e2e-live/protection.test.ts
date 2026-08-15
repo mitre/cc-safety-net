@@ -11,8 +11,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listAuditLogFiles } from '@/engine/audit-scan';
-import type { AuditLogEntry } from '@/ir/audit';
+import { listAuditLogFiles, readAuditLogEntries } from '@/engine/audit-scan';
 import { buildRuntimeBundles } from '../../scripts/build-runtime';
 
 // Live tests drive real agent binaries and spend real usage, so they are
@@ -274,9 +273,6 @@ function runGit(args: string[], cwd: string) {
 
 function readAuditEntries(home: string) {
   return listAuditLogFiles(join(home, '.cc-safety-net', 'logs')).flatMap((file) =>
-    readFileSync(file, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as AuditLogEntry),
+    readAuditLogEntries(file),
   );
 }

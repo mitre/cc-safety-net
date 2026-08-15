@@ -12,24 +12,10 @@ import {
 } from '@/integrations/system-info';
 import { mockVersionFetcher, withEnv, withTempDir } from '../helpers.ts';
 
-function createDeferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 function createCopilotDeferredFetcher() {
   const calls: string[][] = [];
-  const binaryVersion = createDeferred<string | null>();
-  const fallbackVersion = createDeferred<string | null>();
+  const binaryVersion = Promise.withResolvers<string | null>();
+  const fallbackVersion = Promise.withResolvers<string | null>();
   const fetcher = (args: string[]): Promise<string | null> => {
     calls.push(args);
     if (args[0] === 'copilot' && args[1] === '--binary-version') {
@@ -300,7 +286,6 @@ describe('defaultVersionFetcher', () => {
 describe('version comparison', () => {
   test('getPackageVersion returns version string', () => {
     const version = getPackageVersion();
-    expect(typeof version).toBe('string');
     expect(version === 'dev' || /^\d+\.\d+\.\d+/.test(version)).toBe(true);
   });
 });

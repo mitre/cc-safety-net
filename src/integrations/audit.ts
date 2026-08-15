@@ -1,9 +1,14 @@
+import { z } from 'zod';
 import { writeAuditLog } from '@/engine/audit';
 import type { IntegrationDenial } from '@/integrations/denial';
 import type { AuditErrorCode, AuditFailureStage } from '@/ir/audit';
 import type { BlockIntent, Decision } from '@/ir/decision';
 import type { ToolInvocation } from '@/ir/invocation';
 import type { EffectiveSafetyLevel } from '@/ir/policy';
+
+const sessionIdSchema = z.string().trim().min(1);
+const auditFormatKey = 'shape';
+type SessionIdProviderOutput = string | null | undefined;
 
 type GuardEvaluation = {
   stage: string;
@@ -37,7 +42,7 @@ export function projectGuardAudit(
   if (evaluation.decision.kind === 'allow') {
     if (!auditAllowed || invocation.route.kind !== 'command') return undefined;
     const command = getInvocationCommand(invocation);
-    return {
+    const descriptor: GuardAuditDescriptor = {
       decision: 'allow',
       command,
       segment: command,
@@ -45,14 +50,15 @@ export function projectGuardAudit(
       cwd: invocation.context.executionCwd,
       toolName: invocation.toolName,
       level: evaluation.level,
-      ...(evaluation.configFallback ? { configFallback: true as const } : {}),
     };
+    if (evaluation.configFallback) descriptor.configFallback = true;
+    return descriptor;
   }
 
   const evidence = evaluation.decision.evidence.find((item) => item.kind === 'command');
   const command =
     evidence?.command ?? (includeInvocationCommand ? getInvocationCommand(invocation) : '');
-  return {
+  const descriptor: GuardAuditDescriptor = {
     decision: 'deny',
     command,
     segment: evidence?.segment ?? command,
@@ -60,12 +66,13 @@ export function projectGuardAudit(
     cwd: invocation.context.executionCwd,
     toolName: invocation.toolName,
     level: evaluation.level,
-    ...(evaluation.configFallback ? { configFallback: true as const } : {}),
     ruleId: evaluation.decision.ruleId,
     intent: evaluation.decision.intent,
     failureStage: failure?.stage,
     errorCode: failure?.errorCode,
   };
+  if (evaluation.configFallback) descriptor.configFallback = true;
+  return descriptor;
 }
 
 function getInvocationCommand(invocation: ToolInvocation): string {
@@ -74,22 +81,23 @@ function getInvocationCommand(invocation: ToolInvocation): string {
 
 export function writeGuardAudit(
   audit: GuardAuditDescriptor | undefined,
-  getSessionId: () => string | undefined,
-  options: { agent: string; shape?: string; homeDir?: string },
+  getSessionId: () => SessionIdProviderOutput,
+  options: { agent: string; [auditFormatKey]?: string; homeDir?: string },
 ): void {
   if (!audit) return;
-  let sessionId: string | undefined;
+  let sessionOutput: unknown;
   try {
-    sessionId = getSessionId();
+    sessionOutput = getSessionId();
   } catch {
     return;
   }
-  if (typeof sessionId !== 'string' || !sessionId.trim()) return;
+  const sessionId = sessionIdSchema.safeParse(sessionOutput).data;
+  if (!sessionId) return;
   writeAuditLog(sessionId, audit.command, audit.segment, audit.reason, audit.cwd, {
     homeDir: options.homeDir,
     decision: audit.decision,
     agent: options.agent,
-    shape: options.shape,
+    [auditFormatKey]: options[auditFormatKey],
     level: audit.level,
     configFallback: audit.configFallback,
     toolName: audit.toolName,
@@ -102,22 +110,23 @@ export function writeGuardAudit(
 
 export function writeIntegrationDenialAudit(
   denial: IntegrationDenial,
-  getSessionId: () => string | undefined,
+  getSessionId: () => SessionIdProviderOutput,
   options: {
     agent: string;
-    shape?: string;
+    [auditFormatKey]?: string;
     toolName?: string;
     cwd?: string | null;
     homeDir?: string;
   },
 ): void {
-  let sessionId: string | undefined;
+  let sessionOutput: unknown;
   try {
-    sessionId = getSessionId();
+    sessionOutput = getSessionId();
   } catch {
     return;
   }
-  if (typeof sessionId !== 'string' || !sessionId.trim()) return;
+  const sessionId = sessionIdSchema.safeParse(sessionOutput).data;
+  if (!sessionId) return;
   writeAuditLog(
     sessionId,
     denial.command ?? '',
@@ -128,7 +137,7 @@ export function writeIntegrationDenialAudit(
       homeDir: options.homeDir,
       decision: 'deny',
       agent: options.agent,
-      shape: options.shape,
+      [auditFormatKey]: options[auditFormatKey],
       toolName: options.toolName ?? denial.toolName,
       ruleId: denial.ruleId,
       intent: denial.intent,

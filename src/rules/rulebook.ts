@@ -1,4 +1,10 @@
-import { collectCustomRuleNames, formatSchemaIssues, getRulebookSchema } from '@/policy/schema';
+import { z } from 'zod';
+import {
+  collectCustomRuleNames,
+  formatSchemaIssues,
+  getRulebookSchema,
+  type UnparsedValue,
+} from '@/policy/schema';
 import type { ValidationResult } from '@/rules/config';
 import {
   isRulebookWithinAcceptanceLimits,
@@ -11,17 +17,30 @@ import type { Rulebook } from '@/rules/rulebook-types';
 export type { Rulebook } from '@/rules/rulebook-types';
 
 /** @internal - exported for test coverage */
-export function validateRulebook(rulebook: unknown): ValidationResult {
-  if (!isRulebookRecord(rulebook)) {
+export function validateRulebook(rulebook: UnparsedValue): ValidationResult {
+  const record = z
+    .looseObject({
+      allowed_commands: z.unknown().optional(),
+      author: z.unknown().optional(),
+      description: z.unknown().optional(),
+      migrated_from: z.unknown().optional(),
+      name: z.unknown().optional(),
+      rulebook_version: z.unknown().optional(),
+      rules: z.unknown().optional(),
+      tests: z.unknown().optional(),
+      version: z.unknown().optional(),
+    })
+    .safeParse(rulebook);
+  if (!record.success) {
     return { errors: ['Rulebook must be an object'], ruleNames: new Set() };
   }
-  if (!isRulebookWithinAcceptanceLimits(rulebook)) {
+  if (!isRulebookWithinAcceptanceLimits(record.data)) {
     return { errors: [RULEBOOK_LIMIT_ERROR], ruleNames: new Set() };
   }
   const parsed = getRulebookSchema().safeParse(rulebook);
   const errors = [
     // The only rulebook diagnostic that reads as a sentence; the rest are `field: reason`.
-    ...(rulebook.rulebook_version === 1 ? [] : ['rulebook_version must be 1']),
+    ...(record.data.rulebook_version === 1 ? [] : ['rulebook_version must be 1']),
     ...(parsed.success ? [] : formatSchemaIssues(parsed.error.issues, ': ', ': ')),
   ];
   return {
@@ -33,14 +52,10 @@ export function validateRulebook(rulebook: unknown): ValidationResult {
   };
 }
 
-export function assertValidRulebook(rulebook: unknown): Rulebook {
+export function assertValidRulebook(rulebook: UnparsedValue): Rulebook {
   const result = validateRulebook(rulebook);
   if (result.errors.length > 0) {
     throw new Error(result.errors.join('; '));
   }
-  return rulebook as Rulebook;
-}
-
-function isRulebookRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
+  return { ...getRulebookSchema().parse(rulebook), rulebook_version: 1 };
 }

@@ -2,8 +2,11 @@
  * Update checking for the doctor command.
  */
 
+import { z } from 'zod';
 import type { UpdateInfo } from '@/integrations/doctor-types';
 import { getPackageVersion } from '@/integrations/system-info';
+
+const registryVersionSchema = z.object({ version: z.string() });
 
 export function isNewerVersion(latest: string, current: string): boolean {
   if (current === 'dev') return false;
@@ -39,7 +42,7 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
       };
     }
 
-    const data = (await res.json()) as { version: string };
+    const data = registryVersionSchema.parse(await res.json());
     const updateAvailable = isNewerVersion(data.version, currentVersion);
 
     return {

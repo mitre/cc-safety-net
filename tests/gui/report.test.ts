@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { homedir } from 'node:os';
+import { z } from 'zod';
 import { getActivityFeed } from '@/gui/activity';
 import { renderPolicyGuiHtml } from '@/gui/page';
 
@@ -11,13 +12,24 @@ const helperSource = html.slice(
   html.indexOf('var reportIssueUrl ='),
   html.indexOf('var openReportDialog ='),
 );
-const helpers = new Function(
-  `${helperSource}return { scrubReportPaths, buildReportUrl, buildReportRequest };`,
-)() as {
-  scrubReportPaths: (text: string, cwd?: string | null, home?: string | null) => string;
-  buildReportUrl: (fields: Record<string, string>) => string;
-  buildReportRequest: (fields: Record<string, string>) => { url: string; dropped: string[] };
-};
+const stringFieldsSchema = z.record(z.string(), z.string());
+const helpers = z
+  .object({
+    scrubReportPaths: z.function({
+      input: [z.string(), z.string().nullish(), z.string().nullish()],
+      output: z.string(),
+    }),
+    buildReportUrl: z.function({ input: [stringFieldsSchema], output: z.string() }),
+    buildReportRequest: z.function({
+      input: [stringFieldsSchema],
+      output: z.object({ url: z.string(), dropped: z.array(z.string()) }),
+    }),
+  })
+  .parse(
+    new Function(
+      `${helperSource}return { scrubReportPaths, buildReportUrl, buildReportRequest };`,
+    )(),
+  );
 
 describe('false positive report', () => {
   test('scrubs the entry cwd before the home directory, keeping path structure', () => {
@@ -61,17 +73,17 @@ describe('false positive report', () => {
       command: 'rimraf C:\\Users\\ada\\dev\\acme\\dist',
       cwd: 'C:\\Users\\ada\\dev\\acme',
     };
-    const scrub = (text: string) =>
-      helpers.scrubReportPaths(text, entry.cwd, 'C:\\Users\\ada') as string;
+    const scrub = (text: string) => helpers.scrubReportPaths(text, entry.cwd, 'C:\\Users\\ada');
 
     // JSON.stringify doubles every backslash, so scrubbing the serialised text
     // never matches the cwd needle and the entry would ship unscrubbed.
     expect(scrub(JSON.stringify(entry))).toContain('C:\\\\Users\\\\ada');
 
     // Scrubbing each value first is what the dialog does, and it does match.
-    const scrubbed = JSON.stringify(entry, (_key, value) =>
-      typeof value === 'string' ? scrub(value) : value,
-    );
+    const scrubbed = JSON.stringify(entry, (_key, value) => {
+      const text = z.string().safeParse(value);
+      return text.success ? scrub(text.data) : value;
+    });
     expect(scrubbed).not.toContain('ada');
     expect(JSON.parse(scrubbed)).toEqual({ command: 'rimraf <project>\\dist', cwd: '<project>' });
   });

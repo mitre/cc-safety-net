@@ -5,6 +5,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { z } from 'zod';
 import { captureOutputStreams } from '@/integrations/install/native';
 import { getSpawnCommand } from '@/integrations/system-info';
 
@@ -15,6 +16,7 @@ type AmpCommandResult = {
   stdout: string;
   stderr: string;
 };
+const spawnErrorSchema = z.object({ code: z.string().optional() });
 /**
  * `status` is null when the command could not be started at all (e.g. no `amp` on PATH).
  * Asynchronous so a loading spinner keeps animating during a hosted clone or push.
@@ -44,7 +46,7 @@ export const runAmpCommand: AmpRunner = (command, cwd) => {
       clearTimeout(timer);
       resolve({
         status: null,
-        errorCode: (error as NodeJS.ErrnoException).code,
+        errorCode: spawnErrorSchema.safeParse(error).data?.code,
         stdout: captured.stdout,
         stderr: [error.message, captured.stderr].filter(Boolean).join('\n'),
       });

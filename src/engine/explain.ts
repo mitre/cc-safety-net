@@ -64,7 +64,7 @@ export function explainCommand(command: string, options?: ExplainOptions): Expla
 
   const preAnalysisBlock = findPreAnalysisBlock(command, analyzeOptions);
   if (preAnalysisBlock) {
-    return {
+    const result: ExplainResult = {
       trace: {
         steps: [],
         segments: [
@@ -85,13 +85,14 @@ export function explainCommand(command: string, options?: ExplainOptions): Expla
       result: 'blocked',
       reason: sanitizeDiagnosticText(preAnalysisBlock.reason),
       segment: sanitizeDiagnosticText(preAnalysisBlock.target),
-      ...(preAnalysisBlock.ruleId
-        ? { ruleId: sanitizeDiagnosticText(preAnalysisBlock.ruleId) }
-        : {}),
       configSource,
       configValid,
       ...configuration,
     };
+    if (preAnalysisBlock.ruleId) {
+      result.ruleId = sanitizeDiagnosticText(preAnalysisBlock.ruleId);
+    }
+    return result;
   }
 
   const evaluation = evaluateCommandWithTrace(command, analyzeOptions);
@@ -103,7 +104,7 @@ export function explainCommand(command: string, options?: ExplainOptions): Expla
   const activationState = activationMetadata
     ? context.policy.effectiveDestructiveCommandRules[activationMetadata.id]
     : undefined;
-  return {
+  const result: ExplainResult = {
     trace: projectExplainTrace(evaluation.trace),
     result: decision ? 'blocked' : 'allowed',
     reason: decision ? sanitizeDiagnosticText(decision.reason) : undefined,
@@ -117,15 +118,14 @@ export function explainCommand(command: string, options?: ExplainOptions): Expla
     configSource,
     configValid,
     ...configuration,
-    ...(activationMetadata && activationState
-      ? {
-          ruleActivation: {
-            id: activationMetadata.id,
-            ...activationState,
-          },
-        }
-      : {}),
   };
+  if (activationMetadata && activationState) {
+    result.ruleActivation = {
+      id: activationMetadata.id,
+      ...activationState,
+    };
+  }
+  return result;
 }
 
 interface GetConfigSourceOptions {
@@ -136,16 +136,18 @@ interface GetConfigSourceOptions {
   userConfigPath?: string;
 }
 
+interface ConfigSourceResult {
+  configSource: string | null;
+  configValid: boolean;
+}
+
 /**
  * Get the config source path and validity status.
  * Checks project config first, falls back to user config.
  *
  * @internal
  */
-export function getConfigSource(options?: GetConfigSourceOptions): {
-  configSource: string | null;
-  configValid: boolean;
-} {
+export function getConfigSource(options?: GetConfigSourceOptions): ConfigSourceResult {
   const projectPath = getProjectRulesConfigPath(options?.cwd);
   const userPath = options?.userConfigPath ?? getUserRulesConfigPath(options);
   const paths = getPolicyPaths({
@@ -292,26 +294,25 @@ function identifyModeGatedCandidate(command: string, options: AnalyzeInput) {
 
 function sanitizeCustomRule(rule: ExplainResult['customRule']): ExplainResult['customRule'] {
   if (!rule) return undefined;
-  return {
+  const sanitizedRule: NonNullable<ExplainResult['customRule']> = {
     id: sanitizeDiagnosticText(rule.id),
-    ...(rule.rulebook
-      ? {
-          rulebook: {
-            name: sanitizeDiagnosticText(rule.rulebook.name),
-            version: sanitizeDiagnosticText(rule.rulebook.version),
-          },
-        }
-      : {}),
-    ...(rule.source ? { source: sanitizeDiagnosticText(rule.source) } : {}),
-    ...(rule.override
-      ? {
-          override: {
-            type: 'reason' as const,
-            reason: sanitizeDiagnosticText(rule.override.reason),
-          },
-        }
-      : {}),
   };
+  if (rule.rulebook) {
+    sanitizedRule.rulebook = {
+      name: sanitizeDiagnosticText(rule.rulebook.name),
+      version: sanitizeDiagnosticText(rule.rulebook.version),
+    };
+  }
+  if (rule.source) {
+    sanitizedRule.source = sanitizeDiagnosticText(rule.source);
+  }
+  if (rule.override) {
+    sanitizedRule.override = {
+      type: 'reason',
+      reason: sanitizeDiagnosticText(rule.override.reason),
+    };
+  }
+  return sanitizedRule;
 }
 
 function projectExplainTrace(trace: CommandTrace): ExplainTrace {

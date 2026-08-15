@@ -9,7 +9,7 @@ import {
   sanitizeSessionIdForFilename,
   writeAuditLog,
 } from '@/engine/audit';
-import type { AuditLogEntry } from '@/ir/audit';
+import { AUDIT_FORMAT_KEY, type AuditLogEntry, AuditLogEntrySchema } from '@/ir/audit';
 import { withEnv } from '../helpers';
 
 describe('sanitizeSessionIdForFilename', () => {
@@ -496,7 +496,7 @@ describe('writeAuditLog', () => {
     return content
       .split('\n')
       .filter((line) => line.trim())
-      .map((line) => JSON.parse(line) as AuditLogEntry);
+      .map((line) => AuditLogEntrySchema.parse(JSON.parse(line)));
   }
 
   test('denied command creates log entry', () => {
@@ -522,7 +522,7 @@ describe('writeAuditLog', () => {
     });
 
     const logFile = getOnlyLogFile();
-    const entry = JSON.parse(readFileSync(logFile, 'utf-8').trim()) as AuditLogEntry;
+    const entry = AuditLogEntrySchema.parse(JSON.parse(readFileSync(logFile, 'utf-8').trim()));
     const date = entry.ts.slice(0, 10);
     expect(logFile).toBe(
       join(
@@ -618,14 +618,14 @@ describe('writeAuditLog', () => {
     writeAuditLog(sessionId, 'git status', 'git status', 'allowed', '/home/user/project', {
       homeDir: testDir,
       agent: 'claude-code',
-      shape: 'copilot-cli',
+      [AUDIT_FORMAT_KEY]: 'copilot-cli',
       level: 'paranoid',
       toolName: 'Bash',
     });
 
     const entries = readLogEntries(sessionId);
     expect(entries[0]?.agent).toBe('claude-code');
-    expect(entries[0]?.shape).toBe('copilot-cli');
+    expect(entries[0]?.[AUDIT_FORMAT_KEY]).toBe('copilot-cli');
     expect(entries[0]?.level).toBe('paranoid');
     expect(entries[0]?.toolName).toBe('Bash');
   });
@@ -753,14 +753,8 @@ describe('writeAuditLog', () => {
   ] as const)('caps %s only when it exceeds its persistence limit', (field, limit) => {
     const exact = 'x'.repeat(limit);
     const over = 'y'.repeat(limit + 1);
-    const exactOptions = {
-      homeDir: testDir,
-      ...(field === 'toolName' ? { toolName: exact } : {}),
-    };
-    const overOptions = {
-      homeDir: testDir,
-      ...(field === 'toolName' ? { toolName: over } : {}),
-    };
+    const exactOptions = { homeDir: testDir, toolName: field === 'toolName' ? exact : undefined };
+    const overOptions = { homeDir: testDir, toolName: field === 'toolName' ? over : undefined };
 
     writeAuditLog(
       `exact-${field}`,

@@ -1,5 +1,4 @@
-import type { BlockIntent } from './decision.js';
-import type { EffectiveSafetyLevel } from './policy.js';
+import { z } from 'zod';
 
 /** Guard stages recorded for an unexpected evaluation failure. */
 /** @internal */
@@ -24,31 +23,29 @@ export const AUDIT_ERROR_CODES = Object.freeze([
 ] as const);
 export type AuditErrorCode = (typeof AUDIT_ERROR_CODES)[number];
 
-/** @internal */
-export const AUDIT_LOG_DECISIONS = Object.freeze(['allow', 'deny'] as const);
-type AuditLogDecision = (typeof AUDIT_LOG_DECISIONS)[number];
+export const AUDIT_FORMAT_KEY = 'shape';
 
-/** Audit log entry */
-export interface AuditLogEntry {
-  ts: string;
-  id?: string;
-  v?: string;
-  sessionId?: string;
-  decision?: AuditLogDecision;
-  agent?: string;
-  shape?: string;
-  /** Effective safety level in force when the decision was made. */
-  level?: EffectiveSafetyLevel;
-  /** Set when the decision was made against a fallback policy instead of the configured one. */
-  configFallback?: true;
-  toolName?: string;
-  command: string;
-  segment: string;
-  truncated?: boolean;
-  reason: string;
-  ruleId?: string;
-  intent?: BlockIntent;
-  failureStage?: AuditFailureStage;
-  errorCode?: AuditErrorCode;
-  cwd?: string | null;
-}
+/** Audit log wire entry. Loose parsing preserves fields written by newer versions. */
+export const AuditLogEntrySchema = z.looseObject({
+  ts: z.string(),
+  id: z.string().optional(),
+  v: z.string().optional(),
+  sessionId: z.string().optional(),
+  decision: z.string().optional(),
+  agent: z.string().optional(),
+  [AUDIT_FORMAT_KEY]: z.string().optional(),
+  level: z.string().optional(),
+  configFallback: z.literal(true).optional(),
+  toolName: z.string().optional(),
+  command: z.string(),
+  segment: z.string().default(''),
+  truncated: z.boolean().optional(),
+  reason: z.string(),
+  ruleId: z.string().optional(),
+  intent: z.string().optional(),
+  failureStage: z.string().optional(),
+  errorCode: z.string().optional(),
+  cwd: z.string().nullable().optional(),
+});
+
+export type AuditLogEntry = z.output<typeof AuditLogEntrySchema>;

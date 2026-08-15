@@ -2,7 +2,7 @@ import { analyzeCommandWithProgram } from '@/analyzer';
 import { createSemanticFactStore } from '@/guards/semantic-facts';
 import type { AnalyzeInput } from '@/ir/analysis';
 import type { CommandProgram } from '@/ir/command';
-import type { CommandTrace } from '@/ir/command-trace';
+import type { CommandTrace, CommandTraceTerminal } from '@/ir/command-trace';
 import type { Decision } from '@/ir/decision';
 import type { SemanticFactStore } from '@/ir/semantic-facts';
 import { projectSegmentWords } from '@/parser/traversal';
@@ -46,18 +46,23 @@ export function evaluateCommandWithTrace(
   if (decision && index > 0 && index < segments.length) {
     trace.recordSegment({ type: 'segment-skipped', index, reason: 'prior-segment-blocked' }, index);
   }
+  const terminal: CommandTraceTerminal = decision
+    ? decision.ruleId
+      ? {
+          result: 'blocked',
+          reason: decision.reason,
+          segment: decision.evidence.find((item) => item.kind === 'command')?.segment ?? command,
+          ruleId: decision.ruleId,
+        }
+      : {
+          result: 'blocked',
+          reason: decision.reason,
+          segment: decision.evidence.find((item) => item.kind === 'command')?.segment ?? command,
+        }
+    : { result: 'allowed' };
   return Object.freeze({
     decision,
-    trace: recorder.finish(
-      decision
-        ? {
-            result: 'blocked',
-            reason: decision.reason,
-            segment: decision.evidence.find((item) => item.kind === 'command')?.segment ?? command,
-            ...(decision.ruleId ? { ruleId: decision.ruleId } : {}),
-          }
-        : { result: 'allowed' },
-    ),
+    trace: recorder.finish(terminal),
     program,
   });
 }

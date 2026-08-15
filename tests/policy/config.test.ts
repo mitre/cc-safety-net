@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { loadPolicySnapshot } from '@/policy/snapshot';
+import type { JsonValue } from '@/policy/store';
 import {
   getLegacyProjectConfigPath,
   validateConfig,
@@ -145,7 +146,7 @@ describe('runtime config loading', () => {
     );
   }
 
-  function writeUserPolicy(policy: unknown): void {
+  function writeUserPolicy(policy: JsonValue): void {
     mkdirSync(dirname(userRulesDir), { recursive: true });
     writeFileSync(join(dirname(userRulesDir), 'policy.json'), JSON.stringify(policy), 'utf-8');
   }
@@ -155,7 +156,7 @@ describe('runtime config loading', () => {
     writeFileSync(join(dirname(userRulesDir), 'policy.json'), policy, 'utf-8');
   }
 
-  function writeProjectPolicy(policy: unknown): void {
+  function writeProjectPolicy(policy: JsonValue): void {
     mkdirSync(join(tempDir, '.cc-safety-net'), { recursive: true });
     writeFileSync(join(tempDir, '.cc-safety-net', 'policy.json'), JSON.stringify(policy), 'utf-8');
   }

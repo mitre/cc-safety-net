@@ -14,11 +14,11 @@ interface FindingRule {
   derive: (report: DoctorFacts) => DoctorFinding[];
 }
 
-const severityOrder: Record<DoctorFindingSeverity, number> = {
+const severityOrder = {
   error: 0,
   warning: 1,
   info: 2,
-};
+} satisfies Record<DoctorFindingSeverity, number>;
 
 const directoryKinds: ProtectedDirectoryKind[] = ['policy', 'config', 'audit'];
 
@@ -138,15 +138,18 @@ const findingRules: FindingRule[] = [
       derive: (report) =>
         report.posture.directories
           .filter((directory) => directory.kind === kind && directory.status === 'unsafe')
-          .map((directory) => ({
-            checkId: `posture.${kind}-directory-unsafe`,
-            severity: 'error' as const,
-            title: `${kind[0]?.toUpperCase()}${kind.slice(1)} directory is unsafe`,
-            detail: `The ${kind} directory ${describeDirectoryIssues(directory.issues)}.`,
-            fixHint:
-              'Ensure this is a real directory owned by the current user with no group or other write access, then rerun doctor.',
-            ...(directory.path ? { path: directory.path } : {}),
-          })),
+          .map((directory) => {
+            const finding: DoctorFinding = {
+              checkId: `posture.${kind}-directory-unsafe`,
+              severity: 'error',
+              title: `${kind[0]?.toUpperCase()}${kind.slice(1)} directory is unsafe`,
+              detail: `The ${kind} directory ${describeDirectoryIssues(directory.issues)}.`,
+              fixHint:
+                'Ensure this is a real directory owned by the current user with no group or other write access, then rerun doctor.',
+            };
+            if (directory.path) finding.path = directory.path;
+            return finding;
+          }),
     }),
   ),
   {

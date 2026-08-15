@@ -67,7 +67,7 @@ type CapturedChoice = {
   unavailableReason?: string;
 };
 
-async function spawnInstallEval<T>(script: string, env: Record<string, string | undefined>) {
+async function spawnInstallEval(script: string, env: Record<string, string | undefined>) {
   const proc = Bun.spawn(['bun', '--eval', script], {
     cwd: process.cwd(),
     env: { ...process.env, ...env },
@@ -81,7 +81,7 @@ async function spawnInstallEval<T>(script: string, env: Record<string, string | 
 
   expect(await proc.exited).toBe(0);
   expect(stderr).toBe('');
-  return JSON.parse(stdout) as T;
+  expect(JSON.parse(stdout)).toEqual({ exitCode: 0 });
 }
 
 async function runInstallDispatchProbe(
@@ -97,41 +97,39 @@ async function runInstallDispatchProbe(
   const events: string[] = [];
   const output: string[] = [];
   const selectedTargets = options.selectedTargets;
-  const captured = await withEnv({ HOME: homeDir }, () =>
-    captureConsoleOutput(() =>
-      runInstallCommand('install', options.args ?? [], {
-        detectConfiguredTargets: async () => options.configuredTargets ?? [],
-        output: new Writable({
-          write(chunk, _encoding, callback) {
-            output.push(String(chunk));
-            callback();
+  const commandOptions = {
+    detectConfiguredTargets: async () => options.configuredTargets ?? [],
+    output: new Writable({
+      write(chunk, _encoding, callback) {
+        output.push(String(chunk));
+        callback();
+      },
+    }),
+    probeTargets: (command: readonly string[]) => {
+      events.push(`probe:${command[0]}`);
+      return command[0] === 'kimi';
+    },
+    runUpdate: async () => {
+      events.push('update');
+      return options.updateExitCode ?? 0;
+    },
+    selectTargets:
+      selectedTargets === undefined
+        ? undefined
+        : async (_action: string, offered: readonly InstallTargetChoice[]) => {
+            choices.push(
+              ...offered.map((choice) => ({
+                target: choice.target,
+                available: choice.available,
+                unavailableReason: choice.unavailableReason,
+              })),
+            );
+            events.push(`select:${offered.length}`);
+            return selectedTargets;
           },
-        }) as NodeJS.WriteStream,
-        probeTargets: (command) => {
-          events.push(`probe:${command[0]}`);
-          return command[0] === 'kimi';
-        },
-        runUpdate: async () => {
-          events.push('update');
-          return options.updateExitCode ?? 0;
-        },
-        ...(selectedTargets === undefined
-          ? {}
-          : {
-              selectTargets: async (_action, offered) => {
-                choices.push(
-                  ...offered.map((choice) => ({
-                    target: choice.target,
-                    available: choice.available,
-                    unavailableReason: choice.unavailableReason,
-                  })),
-                );
-                events.push(`select:${offered.length}`);
-                return selectedTargets;
-              },
-            }),
-      }),
-    ),
+  };
+  const captured = await withEnv({ HOME: homeDir }, () =>
+    captureConsoleOutput(() => runInstallCommand('install', options.args ?? [], commandOptions)),
   );
   expect(captured.stderr).toEqual([]);
   return { choices, exitCode: captured.result, events, output: output.join('') };
@@ -154,7 +152,7 @@ printf '1.0.0\\n'
     chmodSync(commandPath, 0o755);
   }
 
-  await spawnInstallEval<{ exitCode: number }>(
+  await spawnInstallEval(
     `
 import { Writable } from "node:stream";
 import { runInstallCommand } from "./src/cli/install/index.ts";
@@ -196,7 +194,7 @@ async function runInstallGateProbe(
           write(_chunk, _encoding, callback) {
             callback();
           },
-        }) as NodeJS.WriteStream,
+        }),
         probeTargets: (command) => Object.keys(fixtures).includes(command[0] ?? ''),
         selectTargets: async (_action, offered) => {
           choices.push(

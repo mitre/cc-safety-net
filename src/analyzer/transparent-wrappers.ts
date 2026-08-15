@@ -38,7 +38,7 @@ export function unwrapTransparentWrapper(
   if (childIndex === undefined) return null;
   return {
     wrapper,
-    tokens: [...tokens.slice(childIndex)],
+    tokens: tokens.slice(childIndex),
     childIndex,
     alternativeChildIndices: childIndices.slice(1),
   };

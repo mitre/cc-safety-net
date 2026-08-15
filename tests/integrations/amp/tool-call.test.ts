@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { ToolCall } from '@ampcode/plugin';
+import { z } from 'zod';
 import { createAmpToolCallHandler, handleAmpToolCall } from '@/integrations/amp/tool-call';
 import { getUserPolicyPath } from '@/policy/store';
 import { readAuditLogEntriesForSession, readLatestAuditLogEntry, withEnv } from '../../helpers';
@@ -41,7 +43,7 @@ describe('Amp tool.call event', () => {
         action: 'reject-and-continue',
         message: expect.stringContaining('BLOCKED by CC Safety Net'),
       });
-      expect((result as { message: string }).message).toContain('git reset --hard');
+      expect(rejectionMessage(result)).toContain('git reset --hard');
     });
   });
 
@@ -50,7 +52,7 @@ describe('Amp tool.call event', () => {
       const result = handleAmpToolCall(shellEvent('rm -rf .'), ampApi(dir));
 
       expect(result).toMatchObject({ action: 'reject-and-continue' });
-      expect((result as { message: string }).message).toContain('Command: rm -rf .');
+      expect(rejectionMessage(result)).toContain('Command: rm -rf .');
     });
   });
 
@@ -58,9 +60,7 @@ describe('Amp tool.call event', () => {
     withTempDir((dir) => {
       const result = handleAmpToolCall(ampEvent('Read', { file_path: '.env' }), ampApi(dir));
 
-      expect((result as { message: string }).message).toContain(
-        'Access to a sensitive path is not allowed.',
-      );
+      expect(rejectionMessage(result)).toContain('Access to a sensitive path is not allowed.');
     });
   });
 
@@ -72,7 +72,7 @@ describe('Amp tool.call event', () => {
           ampApi(dir),
         );
 
-        expect((result as { message: string }).message).toContain(
+        expect(rejectionMessage(result)).toContain(
           'This path contains the protected policy config and you must not modify or delete it.',
         );
       });
@@ -86,9 +86,7 @@ describe('Amp tool.call event', () => {
         ampApi(dir),
       );
 
-      expect((result as { message: string }).message).toContain(
-        'Access to a sensitive path is not allowed.',
-      );
+      expect(rejectionMessage(result)).toContain('Access to a sensitive path is not allowed.');
     });
   });
 
@@ -106,7 +104,7 @@ describe('Amp tool.call event', () => {
 
         const result = handleAmpToolCall(ampEvent('apply_patch', { command: patch }), ampApi(dir));
 
-        expect((result as { message: string }).message).toContain(
+        expect(rejectionMessage(result)).toContain(
           'This path contains the protected policy config and you must not modify or delete it.',
         );
       });
@@ -189,7 +187,10 @@ describe('Amp tool.call event', () => {
 
   test('fails closed on a missing or blank tool name', () => {
     withTempDir((dir) => {
-      for (const tool of [undefined, null, '', '   ', 42]) {
+      expect(handleAmpToolCall({ input: {}, thread: { id: 'T-1' } }, ampApi(dir))).toMatchObject({
+        action: 'reject-and-continue',
+      });
+      for (const tool of [null, '', '   ', 42]) {
         expect(
           handleAmpToolCall({ tool, input: {}, thread: { id: 'T-1' } }, ampApi(dir)),
         ).toMatchObject({ action: 'reject-and-continue' });
@@ -257,7 +258,7 @@ describe('Amp tool.call event', () => {
         handleAmpToolCall(
           shellEvent('ignored'),
           ampApi(dir, {
-            shellCommandFromToolCall: () => ({ command: 42 as unknown as string }),
+            shellCommandFromToolCall: () => ({ command: 42 }),
           }),
         ),
       ).toMatchObject({ action: 'reject-and-continue' });
@@ -288,9 +289,7 @@ describe('Amp tool.call event', () => {
       withEnv({ HOME: home }, () => {
         const result = handleAmpToolCall(shellEvent('cat .env', undefined, sessionId), ampApi(dir));
 
-        expect((result as { message: string }).message).toContain(
-          'Access to a sensitive path is not allowed.',
-        );
+        expect(rejectionMessage(result)).toContain('Access to a sensitive path is not allowed.');
         expect(readLatestAuditLogEntry(home, sessionId)).toEqual(
           expect.objectContaining({
             agent: 'amp',
@@ -318,7 +317,7 @@ describe('Amp tool.call event', () => {
         ).toEqual({ action: 'allow' });
 
         const entries = readAuditLogEntriesForSession(home, sessionId);
-        expect(entries).toHaveLength(recorded as number);
+        expect(entries).toHaveLength(recorded);
         if (recorded) {
           expect(entries[0]).toMatchObject({ agent: 'amp', decision: 'allow', reason: 'allowed' });
         }
@@ -353,7 +352,7 @@ describe('Amp tool.call event', () => {
       withEnv({ HOME: home }, () => {
         const result = handleAmpToolCall(shellEvent('', undefined, 'T-amp-preflight'), ampApi(dir));
 
-        expect((result as { message: string }).message).toContain('CC Safety Net failed closed');
+        expect(rejectionMessage(result)).toContain('CC Safety Net failed closed');
         expect(readAuditLogEntriesForSession(home, 'T-amp-preflight')).toMatchObject([
           { agent: 'amp' },
         ]);
@@ -375,8 +374,8 @@ describe('Amp tool.call event', () => {
         action: 'reject-and-continue',
         message: expect.stringContaining('CC Safety Net failed closed'),
       });
-      expect((result as { message: string }).message).toContain('Command: git status');
-      expect((result as { message: string }).message).not.toContain('unexpected analysis failure');
+      expect(rejectionMessage(result)).toContain('Command: git status');
+      expect(rejectionMessage(result)).not.toContain('unexpected analysis failure');
     });
   });
 
@@ -404,7 +403,13 @@ describe('Amp tool.call event', () => {
   });
 });
 
-function ampEvent(tool: string, input: Record<string, unknown>, threadId = 'T-amp-session') {
+type FakeToolInput = Record<string, string>;
+const fakeShellToolCallSchema = z.object({
+  tool: z.string(),
+  input: z.object({ command: z.string(), dir: z.string().optional() }),
+});
+
+function ampEvent(tool: string, input: FakeToolInput, threadId = 'T-amp-session') {
   return { toolUseID: 'amp-tool-use', tool, input, thread: { id: threadId } };
 }
 
@@ -412,22 +417,18 @@ function shellEvent(command: string, dir?: string, threadId = 'T-amp-session') {
   return ampEvent('shell_command', dir === undefined ? { command } : { command, dir }, threadId);
 }
 
-function defaultShellCommandFromToolCall(event: {
-  tool: string;
-  input: Record<string, unknown>;
-}): FakeShellCommand {
-  if (event.tool !== 'shell_command' && event.tool !== 'Bash') return null;
-  return { command: event.input.command as string, dir: event.input.dir as string | undefined };
+function defaultShellCommandFromToolCall(event: ToolCall): FakeShellCommand {
+  const parsedEvent = fakeShellToolCallSchema.safeParse(event);
+  if (!parsedEvent.success) return null;
+  if (parsedEvent.data.tool !== 'shell_command' && parsedEvent.data.tool !== 'Bash') return null;
+  return { command: parsedEvent.data.input.command, dir: parsedEvent.data.input.dir };
 }
 
 function ampApi(
   rootDir: string | null,
   overrides: {
     filePathFromURI?: (uri: { toString(): string }) => string;
-    shellCommandFromToolCall?: (event: {
-      tool: string;
-      input: Record<string, unknown>;
-    }) => FakeShellCommand;
+    shellCommandFromToolCall?: (event: ToolCall) => FakeShellCommand | { command: number };
   } = {},
 ) {
   return {
@@ -438,6 +439,11 @@ function ampApi(
         overrides.shellCommandFromToolCall ?? defaultShellCommandFromToolCall,
     },
   };
+}
+
+function rejectionMessage(result: ReturnType<typeof handleAmpToolCall>) {
+  expect(result.action).toBe('reject-and-continue');
+  return result.action === 'reject-and-continue' ? result.message : '';
 }
 
 function withTempDir(fn: (dir: string) => void): void {

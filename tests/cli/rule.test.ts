@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { runRuleCommand } from '@/cli/rule';
 import { RULE_DOC } from '@/cli/rule/doc';
 import { runRulesVerify } from '@/cli/rule/verify';
@@ -590,18 +591,18 @@ describe('rule remove', () => {
   });
 });
 
-function ruleListEnv(tempDir: string): Record<string, string> {
+function ruleListEnv(tempDir: string) {
   return {
     CC_SAFETY_NET_HOME: join(tempDir, 'home', '.cc-safety-net'),
     HOME: join(tempDir, 'home'),
   };
 }
 
-function projectRuleEnv(tempDir: string): Record<string, string> {
+function projectRuleEnv(tempDir: string) {
   return { HOME: join(tempDir, 'home') };
 }
 
-function globalRuleEnv(tempDir: string): Record<string, string> {
+function globalRuleEnv(tempDir: string) {
   return {
     CC_SAFETY_NET_HOME: join(tempDir, '.cc-safety-net'),
     HOME: join(tempDir, 'home'),
@@ -998,17 +999,26 @@ function legacyRule(name: string, command: string) {
   };
 }
 
+const rulesConfigSchema = z.object({
+  version: z.literal(1),
+  rules: z.array(z.string()),
+  overrides: z.record(z.string(), z.union([z.literal('off'), z.object({ reason: z.string() })])),
+  transparent_wrappers: z.array(z.string()).optional(),
+});
+
+const rulebookFixtureSchema = z.looseObject({
+  name: z.string(),
+  rules: z.array(z.looseObject({})),
+  allowed_commands: z.array(z.string()).optional(),
+  migrated_from: z.string().optional(),
+});
+
 function readRulesConfig(path: string) {
-  return JSON.parse(readFileSync(path, 'utf-8')) as {
-    version: 1;
-    rules: string[];
-    overrides: Record<string, unknown>;
-    transparent_wrappers?: string[];
-  };
+  return rulesConfigSchema.parse(JSON.parse(readFileSync(path, 'utf-8')));
 }
 
 function readRulebook(path: string) {
-  return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+  return rulebookFixtureSchema.parse(JSON.parse(readFileSync(path, 'utf-8')));
 }
 
 function captureOutput(fn: () => number) {

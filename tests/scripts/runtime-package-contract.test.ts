@@ -1,7 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-
-const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as Record<string, unknown>;
+import pkg from '../../package.json';
 
 describe('published runtime contract', () => {
   test('publishes one ESM API and rejects deep imports', () => {
@@ -36,7 +34,7 @@ describe('published runtime contract', () => {
     expect(pkg.peerDependenciesMeta).toEqual({
       '@opencode-ai/plugin': { optional: true },
     });
-    expect((pkg.scripts as Record<string, string>)['audit:dependencies']).toBe('bun audit');
-    expect(pkg.gitHead).toBeUndefined();
+    expect(pkg.scripts['audit:dependencies']).toBe('bun audit');
+    expect('gitHead' in pkg).toBeFalse();
   });
 });

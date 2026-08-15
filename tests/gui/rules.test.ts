@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 import { renderPolicyGuiHtml } from '@/gui/page';
 
 const html = renderPolicyGuiHtml('test-token');
@@ -55,11 +56,15 @@ const promptFor = (
 ) =>
   // rulesData carries no projectPath: the prompt has to read the editable
   // field, which is the only value the user has confirmed.
-  new Function('rulesData', 'rulesScope', 'qs', `${helperSource}return rulePromptText();`)(
-    { rulebooks },
-    scope,
-    (id: string) => ({ value: id === 'rules-project-path' ? projectPath : input }),
-  ) as string;
+  z
+    .string()
+    .parse(
+      new Function('rulesData', 'rulesScope', 'qs', `${helperSource}return rulePromptText();`)(
+        { rulebooks },
+        scope,
+        (id: string) => ({ value: id === 'rules-project-path' ? projectPath : input }),
+      ),
+    );
 
 describe('rule composer prompt', () => {
   // Exact equality doubles as the leak check: the prompt goes to a third-party

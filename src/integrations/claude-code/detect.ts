@@ -3,22 +3,25 @@
  */
 
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   type DetectContext,
   type HookDetection,
-  readRecord,
   readStateFile,
+  type StateFileValue,
 } from '@/integrations/detect/context';
 
 const CLAUDE_SAFETY_NET_PLUGIN_ID = 'cc-safety-net@cc-marketplace';
+const claudeInstalledPluginsSchema = z.object({ plugins: z.record(z.string(), z.array(z.json())) });
+const claudeSettingsSchema = z.object({ enabledPlugins: z.record(z.string(), z.boolean()) });
 
 function getClaudeInstalledPluginsPath(homeDir: string): string {
   return join(homeDir, '.claude', 'plugins', 'installed_plugins.json');
 }
 
-function isInstalledPluginRecord(value: unknown, pluginId: string): boolean {
-  const record = readRecord(readRecord(value, 'plugins'), pluginId);
-  return Array.isArray(record) && record.length > 0;
+function isInstalledPluginRecord(value: StateFileValue, pluginId: string): boolean {
+  const plugins = claudeInstalledPluginsSchema.safeParse(value).data?.plugins;
+  return (plugins?.[pluginId]?.length ?? 0) > 0;
 }
 
 /** Whether Claude Code records the given plugin id as installed. */
@@ -47,7 +50,9 @@ export function detectClaudeCode(homeDir: string): HookDetection {
 
   const enabled =
     settings.kind === 'ok' &&
-    readRecord(readRecord(settings.value, 'enabledPlugins'), CLAUDE_SAFETY_NET_PLUGIN_ID) === true;
+    claudeSettingsSchema.safeParse(settings.value).data?.enabledPlugins[
+      CLAUDE_SAFETY_NET_PLUGIN_ID
+    ] === true;
 
   if (!enabled) {
     return {

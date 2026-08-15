@@ -582,7 +582,7 @@ export function extractXargsChildCommandWithInfo(tokens: readonly string[]): Xar
       // Handle -I (replacement option)
       if (token === '-I') {
         // -I TOKEN - next arg is the token
-        replacementToken = (tokens[i + 1] as string | undefined) ?? '{}';
+        replacementToken = tokens[i + 1] ?? '{}';
         i += 2;
         continue;
       }
@@ -612,7 +612,7 @@ export function extractXargsChildCommandWithInfo(tokens: readonly string[]): Xar
 
       // Handle -J (macOS xargs replacement, consumes value)
       if (token === '-J') {
-        replacementToken = (tokens[i + 1] as string | undefined) ?? '{}';
+        replacementToken = tokens[i + 1] ?? '{}';
         i += 2;
         continue;
       }

@@ -1,4 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
+import type { NonSharedBuffer } from 'node:buffer';
+import type { ObjectEncodingOptions, PathOrFileDescriptor } from 'node:fs';
 import * as fs from 'node:fs';
 import {
   chmodSync,
@@ -298,14 +300,27 @@ describe('pruneExpiredAuditLogs legacy layout', () => {
       // A concurrent writer can only append between the metadata reads that
       // bracket the file read, so the read itself is the hook point.
       const realReadFileSync = fs.readFileSync;
-      const spy = spyOn(fs, 'readFileSync').mockImplementation(((
-        path: Parameters<typeof fs.readFileSync>[0],
-        options: Parameters<typeof fs.readFileSync>[1],
-      ) => {
+      function concurrentRead(
+        path: PathOrFileDescriptor,
+        options?: { encoding?: null; flag?: string } | null,
+      ): NonSharedBuffer;
+      function concurrentRead(
+        path: PathOrFileDescriptor,
+        options: { encoding: BufferEncoding; flag?: string } | BufferEncoding,
+      ): string;
+      function concurrentRead(
+        path: PathOrFileDescriptor,
+        options?: (ObjectEncodingOptions & { flag?: string }) | BufferEncoding | null,
+      ): string | NonSharedBuffer;
+      function concurrentRead(
+        path: PathOrFileDescriptor,
+        options?: (ObjectEncodingOptions & { flag?: string }) | BufferEncoding | null,
+      ) {
         const content = realReadFileSync(path, options);
         if (path === legacy) utimesSync(legacy, NOW, NOW);
         return content;
-      }) as typeof fs.readFileSync);
+      }
+      const spy = spyOn(fs, 'readFileSync').mockImplementation(concurrentRead);
 
       try {
         pruneExpiredAuditLogs(logsDir, now);

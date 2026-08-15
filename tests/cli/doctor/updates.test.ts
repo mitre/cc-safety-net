@@ -2,12 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { checkForUpdates } from '@/cli/doctor/updates';
 import { getPackageVersion } from '@/integrations/system-info';
 
-async function withFetch<T>(
-  replacement: () => Promise<Response>,
-  fn: () => Promise<T>,
-): Promise<T> {
+async function withFetch<T>(replacement: typeof fetch, fn: () => Promise<T>): Promise<T> {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = replacement as unknown as typeof fetch;
+  globalThis.fetch = replacement;
   try {
     return await fn();
   } finally {
@@ -15,10 +12,14 @@ async function withFetch<T>(
   }
 }
 
+function mockFetch(request: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>) {
+  return Object.assign(request, { preconnect: fetch.preconnect });
+}
+
 describe('checkForUpdates', () => {
   test('reports the registry version as the latest without an error', async () => {
     const update = await withFetch(
-      async () => new Response(JSON.stringify({ version: '9.9.9' })),
+      mockFetch(async () => new Response(JSON.stringify({ version: '9.9.9' }))),
       checkForUpdates,
     );
 
@@ -29,7 +30,7 @@ describe('checkForUpdates', () => {
 
   test('never offers an update to a dev build, however new the registry version is', async () => {
     const update = await withFetch(
-      async () => new Response(JSON.stringify({ version: '9.9.9' })),
+      mockFetch(async () => new Response(JSON.stringify({ version: '9.9.9' }))),
       checkForUpdates,
     );
 
@@ -40,9 +41,12 @@ describe('checkForUpdates', () => {
   });
 
   test('reports an unreachable registry as an error instead of rejecting', async () => {
-    const update = await withFetch(async () => {
-      throw new TypeError('fetch failed');
-    }, checkForUpdates);
+    const update = await withFetch(
+      mockFetch(async () => {
+        throw new TypeError('fetch failed');
+      }),
+      checkForUpdates,
+    );
 
     expect(update).toEqual({
       currentVersion: getPackageVersion(),
@@ -54,7 +58,7 @@ describe('checkForUpdates', () => {
 
   test('reports an unhappy registry status as an error instead of parsing the body', async () => {
     const update = await withFetch(
-      async () => new Response('<html>service unavailable</html>', { status: 503 }),
+      mockFetch(async () => new Response('<html>service unavailable</html>', { status: 503 })),
       checkForUpdates,
     );
 

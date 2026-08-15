@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { z } from 'zod';
 import { AMP_HOST_SCRIPT } from '../../../scripts/integration-host-scripts';
 
 const ARTIFACT = resolve('dist/amp/cc-safety-net.ts');
+const ampHostResultSchema = z.object({ action: z.string(), message: z.string().optional() });
 
 // A mocked Amp host loads the built plugin artifact, registers the handler, and
 // runs one call. The artifact is the exact file the installer copies, so this
@@ -29,7 +31,7 @@ function runAmpHost(command: string, artifact = ARTIFACT) {
     if (result.exitCode !== 0) {
       throw new Error(`Amp host failed (${result.exitCode}): ${result.stderr.toString()}`);
     }
-    return JSON.parse(result.stdout.toString()) as { action: string; message?: string };
+    return ampHostResultSchema.parse(JSON.parse(result.stdout.toString()));
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
   }

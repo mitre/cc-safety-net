@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { PATH_CANONICALIZATION_LIMITS } from '@/analyzer/path-canonicalization';
 import { listAuditLogFiles } from '@/engine/audit-scan';
+import type { HookOutput } from '@/integrations/claude-code/hook';
+import type { GuiPolicy } from '@/policy/store';
 import { syncRulesConfig, writeDefaultRulesConfig, writeStarterRulebook } from '@/rules/policy';
 import { readAuditLogEntriesForSession, readLatestAuditLogEntry } from '../../helpers';
 import {
@@ -16,8 +19,23 @@ import {
   writeUserPolicy,
 } from '../hook-helpers';
 
+type ProjectPolicyFixture = {
+  version: GuiPolicy['version'];
+  secret_protection: Partial<GuiPolicy['secret_protection']>;
+};
+
+const claudeCodeHookOutputSchema = z.object({
+  hookSpecificOutput: z.object({
+    hookEventName: z.string(),
+    permissionDecision: z.enum(['allow', 'deny']),
+    permissionDecisionReason: z.string(),
+  }),
+}) satisfies z.ZodType<HookOutput>;
+
+const auditFormatProperty = 'shape';
+
 describe('Claude Code hook', () => {
-  function writeProjectPolicy(cwd: string, policy: unknown): void {
+  function writeProjectPolicy(cwd: string, policy: ProjectPolicyFixture): void {
     mkdirSync(join(cwd, '.cc-safety-net'), { recursive: true });
     writeFileSync(join(cwd, '.cc-safety-net', 'policy.json'), JSON.stringify(policy), 'utf-8');
   }
@@ -27,25 +45,26 @@ describe('Claude Code hook', () => {
       ['codex', '.codex', 'claude-code'],
       ['claude-code', '.claude', undefined],
       ['unknown', undefined, 'claude-code'],
-    ] as const)('audits Claude-shaped calls as %s', async (agent, root, shape) => {
+    ] as const)('audits Claude-shaped calls as %s', async (agent, root, hookFormat) => {
       await withHookTestContext(async (context) => {
         const sessionId = `agent-${agent}`;
-        await context.runClaudeCodeHook(
-          {
-            ...context.claudeCodeBashInput('git reset --hard'),
-            session_id: sessionId,
-            ...(root
-              ? { transcript_path: join(context.home, root, 'sessions', 'transcript.jsonl') }
-              : {}),
-          },
-          { CLAUDECODE: '', CLAUDE_CODE_ENTRYPOINT: '' },
-        );
+        const input = {
+          ...context.claudeCodeBashInput('git reset --hard'),
+          session_id: sessionId,
+        };
+        if (root) {
+          Object.assign(input, {
+            transcript_path: join(context.home, root, 'sessions', 'transcript.jsonl'),
+          });
+        }
+        await context.runClaudeCodeHook(input, { CLAUDECODE: '', CLAUDE_CODE_ENTRYPOINT: '' });
 
-        expect(readLatestAuditLogEntry(context.home, sessionId)).toMatchObject({
-          agent,
-          ...(shape ? { shape } : {}),
-        });
-        if (shape === undefined) {
+        const expectedAuditEntry = { agent };
+        if (hookFormat) {
+          Object.assign(expectedAuditEntry, { [auditFormatProperty]: hookFormat });
+        }
+        expect(readLatestAuditLogEntry(context.home, sessionId)).toMatchObject(expectedAuditEntry);
+        if (hookFormat === undefined) {
           expect(readLatestAuditLogEntry(context.home, sessionId)).not.toHaveProperty('shape');
         }
       });
@@ -605,7 +624,7 @@ period, so default to 0 instead of hiding the Weekly block at fresh-period start
         expect(readAuditLogEntriesForSession(context.home, sessionId)).toMatchObject([
           {
             agent: 'unknown',
-            shape: 'claude-code',
+            [auditFormatProperty]: 'claude-code',
             command: 'git reset --hard',
             reason:
               'CC Safety Net failed closed because command analysis failed unexpectedly. This is not caused by your command. Report it to the user.',
@@ -661,10 +680,10 @@ period, so default to 0 instead of hiding the Weekly block at fresh-period start
 
 async function denialReason(context: HookTestContext, command: string): Promise<string> {
   const result = await context.runClaudeCodeHook(context.claudeCodeBashInput(command));
-  const parsed = JSON.parse(result.stdout);
+  const parsed = claudeCodeHookOutputSchema.parse(JSON.parse(result.stdout));
 
   expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
-  return parsed.hookSpecificOutput.permissionDecisionReason as string;
+  return parsed.hookSpecificOutput.permissionDecisionReason;
 }
 
 function writeProjectRulesConfigWithoutLock(cwd: string): void {

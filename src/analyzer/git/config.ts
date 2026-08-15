@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
@@ -151,17 +151,15 @@ function effectiveGitConfigEnablesRecursiveSubmodules(
     return true;
   }
 
-  try {
-    const value = execFileSync(gitBinary, ['config', '--get', 'submodule.recurse'], {
-      cwd,
-      encoding: 'utf8',
-      env: withoutGitConfigEnv(process.env),
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return gitConfigValueEnablesRecursiveSubmodules(value);
-  } catch (error) {
-    return !isGitConfigUnsetError(error);
-  }
+  const result = spawnSync(gitBinary, ['config', '--get', 'submodule.recurse'], {
+    cwd,
+    encoding: 'utf8',
+    env: withoutGitConfigEnv(process.env),
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (result.status === 1) return false;
+  if (result.status !== 0) return true;
+  return gitConfigValueEnablesRecursiveSubmodules(result.stdout.trim());
 }
 
 function localGitConfigEnablesRecursiveSubmodules(cwd: string): boolean | null {
@@ -200,15 +198,6 @@ function withoutGitConfigEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     }
   }
   return nextEnv;
-}
-
-function isGitConfigUnsetError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'status' in error &&
-    (error as { status?: unknown }).status === 1
-  );
 }
 
 function getLocalGitConfigPaths(cwd: string): string[] | null {

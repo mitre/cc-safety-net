@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
-import { PassThrough, Writable } from 'node:stream';
 import { runInstallCommand } from '@/cli/install';
 import { AMP_MANAGED_HEADER } from '@/integrations/amp/artifact';
 import type { InstallTargetChoice } from '@/integrations/install/choices';
@@ -28,6 +27,23 @@ const PROBED_CLIS = [
   'opencode',
   'pi',
 ] as const;
+
+type InstallOutputChunk = string | Uint8Array;
+
+function createInstallOutput(onWrite: (chunk: InstallOutputChunk) => void = () => {}) {
+  const output: NodeJS.WriteStream = Object.create(process.stdout);
+  output.write = (chunk) => {
+    onWrite(chunk);
+    return true;
+  };
+  return output;
+}
+
+function createNonInteractiveInstallInput() {
+  const input: NodeJS.ReadStream = Object.create(process.stdin);
+  input.isTTY = false;
+  return input;
+}
 
 function makeFakeBin(homeDir: string, bodies: Readonly<Record<string, string>>) {
   return `${writeFakeCommands(homeDir, bodies)}${delimiter}${process.env.PATH ?? ''}`;
@@ -71,11 +87,7 @@ async function probeInstallChoices(
   const exitCode = await withEnv({ HOME: homeDir, PATH: path }, () =>
     runInstallCommand(action, [], {
       fetchVersion: async () => null,
-      output: new Writable({
-        write(_chunk, _encoding, callback) {
-          callback();
-        },
-      }) as unknown as NodeJS.WriteStream,
+      output: createInstallOutput(),
       probeTargets: () => true,
       selectTargets: async (_action, offered) => {
         choices.push(...offered);
@@ -106,12 +118,7 @@ command = "npx -y cc-safety-net hook --kimi-code"
     const chunks: string[] = [];
     const exitCode = await withEnv({ HOME: homeDir, KIMI_CODE_HOME: undefined }, () =>
       runInstallCommand('install', ['--kimi-code'], {
-        output: new Writable({
-          write(chunk, _encoding, callback) {
-            chunks.push(String(chunk));
-            callback();
-          },
-        }) as unknown as NodeJS.WriteStream,
+        output: createInstallOutput((chunk) => chunks.push(String(chunk))),
         ...options,
       }),
     );
@@ -196,7 +203,7 @@ command = "npx -y cc-safety-net hook --kimi-code"
     const homeDir = makeTempHome('safety-net-kimi-method-fallback');
 
     const result = await runKimiInstall(homeDir, {
-      input: new PassThrough() as unknown as NodeJS.ReadStream,
+      input: createNonInteractiveInstallInput(),
     });
 
     expect(result.exitCode).toBe(0);
@@ -259,7 +266,7 @@ describe('flagged install loading state', () => {
 
     const exitCode = await withEnv({ HOME: homeDir, PATH: path }, () =>
       runInstallCommand('install', ['--pi'], {
-        output: output as unknown as NodeJS.WriteStream,
+        output: Object.assign(Object.create(process.stdout), output),
       }),
     );
 

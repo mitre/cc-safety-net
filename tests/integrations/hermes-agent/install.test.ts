@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { delimiter, join } from 'node:path';
+import { z } from 'zod';
 import {
   buildHermesAgentPluginFiles,
   HERMES_AGENT_MANAGED_HEADER,
@@ -33,6 +34,14 @@ import { withEnv } from '../../helpers';
 import { makeTempHome, runCli } from '../hook-helpers';
 
 const MODULE_FILE = '__init__.py';
+const pluginHostResultSchema = z.object({
+  hookName: z.string(),
+  result: z.json(),
+  cwd: z.string(),
+  elapsedSeconds: z.number(),
+});
+const pluginPayloadSchema = z.looseObject({ cwd: z.string().optional() });
+type PluginArgs = z.input<typeof pluginPayloadSchema>;
 const MANIFEST_FILE = 'plugin.yaml';
 
 function detectHermes(homeDir: string) {
@@ -225,7 +234,7 @@ esac
 function runPluginCallback(
   mode: string,
   tool: string,
-  args: Record<string, unknown>,
+  args: PluginArgs,
   hermes: { sessionCwd?: string } | null = {},
 ) {
   const dir = makeTempHome('safety-net-hermes-python');
@@ -267,14 +276,9 @@ function runPluginCallback(
     );
     expect(spawned.stderr.toString()).toBe('');
     return {
-      ...(JSON.parse(spawned.stdout.toString()) as {
-        hookName: string;
-        result: unknown;
-        cwd: string;
-        elapsedSeconds: number;
-      }),
+      ...pluginHostResultSchema.parse(JSON.parse(spawned.stdout.toString())),
       payload: existsSync(payloadPath)
-        ? (JSON.parse(readFileSync(payloadPath, 'utf-8')) as Record<string, unknown>)
+        ? pluginPayloadSchema.parse(JSON.parse(readFileSync(payloadPath, 'utf-8')))
         : undefined,
       spawnCwd: existsSync(spawnCwdPath) ? readFileSync(spawnCwdPath, 'utf-8').trim() : undefined,
       grandchildPid: existsSync(grandchildPidPath)
@@ -359,9 +363,8 @@ describe('Hermes Agent plugin artifact', () => {
       ['missing', 'CC Safety Net failed closed: npx was not found on PATH.'],
     ] as const)('%s', (mode, expected) => {
       const run = runPluginCallback(mode, 'terminal', { command: 'rm -rf /' });
-      expect(run.result).toEqual(
-        typeof expected === 'string' ? { action: 'block', message: expected } : expected,
-      );
+      const message = z.string().safeParse(expected).data;
+      expect(run.result).toEqual(message ? { action: 'block', message } : expected);
     });
 
     // Hermes runs a `terminal` call without `workdir` in the session's own cwd RECORD — its `cd`
@@ -385,7 +388,9 @@ describe('Hermes Agent plugin artifact', () => {
       const run = runPluginCallback('allow', 'terminal', { command: 'ls' }, null);
 
       expect(run.result).toMatchObject({ action: 'block' });
-      expect((run.result as { message: string }).message).toContain('install --hermes-agent');
+      expect(z.object({ message: z.string() }).parse(run.result).message).toContain(
+        'install --hermes-agent',
+      );
       expect(run.payload).toBeUndefined();
     });
 

@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 import { processHomeDir } from '@/ir/environment';
 import { getDestructiveAllowPathError, getSecretDenyPathError } from '@/policy/allow-paths';
 import { getCCSafetyNetEnvModes } from '@/policy/env';
@@ -32,7 +33,12 @@ import { writeJsonAtomic } from '@/rules/policy/config-file';
 import { getUserRulesDir, POLICY_FILE } from '@/rules/policy/paths';
 import type { RulesPolicyOptions } from '@/rules/policy/types';
 
-const SAFETY_LEVELS = new Set(['standard', 'strict', 'paranoid']);
+const JsonValueSchema = z.json();
+export type JsonValue = z.output<typeof JsonValueSchema>;
+
+declare global {
+  var __CC_SAFETY_NET_EMBEDDED_POLICY__: JsonValue | undefined;
+}
 
 /**
  * Which protective fallback backs an unreadable policy file: `salvaged` keeps
@@ -59,6 +65,12 @@ type PartialPolicy = {
   destructiveCommandRuleOverrides: Record<string, DestructiveCommandRuleOverride>;
   destructiveCommandAllowPaths: string[];
   secretProtection: SecretProtectionConfig;
+};
+
+type PolicyReadResult = {
+  policy: PartialPolicy;
+  errors: string[];
+  fallback?: PolicyFallback;
 };
 
 export type GuiPolicy = {
@@ -171,7 +183,7 @@ export function readUserPolicyForGui(options: RulesPolicyOptions = {}): GuiPolic
   }
 
   try {
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = JsonValueSchema.parse(JSON.parse(raw));
     const errors = getUserPolicyDiagnostics(parsed);
     return {
       path,
@@ -192,7 +204,7 @@ export function readUserPolicyForGui(options: RulesPolicyOptions = {}): GuiPolic
 }
 
 export function writeUserPolicyFromGui(
-  policy: unknown,
+  policy: JsonValue,
   options: RulesPolicyOptions = {},
 ): GuiPolicyWriteResult {
   const path = getUserPolicyPath(options);
@@ -209,10 +221,7 @@ export function writeUserPolicyFromGui(
   return { path, policy: normalizedPolicy, errors: [] };
 }
 
-export function previewUserPolicyForGui(policy: unknown): {
-  preview?: PolicyPreview;
-  errors: string[];
-} {
+export function previewUserPolicyForGui(policy: JsonValue) {
   const errors = getUserPolicyDiagnostics(policy);
   if (errors.length > 0) return { errors };
   return { preview: createPolicyPreview(normalizeGuiPolicy(policy)), errors: [] };
@@ -266,7 +275,10 @@ export function repairUserPolicyForGui(options: RulesPolicyOptions = {}): GuiPol
   if (!raw.trim()) return writeUserPolicyFromGui(DEFAULT_GUI_POLICY, options);
 
   try {
-    return writeUserPolicyFromGui(normalizeGuiPolicy(JSON.parse(raw) as unknown), options);
+    return writeUserPolicyFromGui(
+      normalizeGuiPolicy(JsonValueSchema.parse(JSON.parse(raw))),
+      options,
+    );
   } catch {
     return writeUserPolicyFromGui(DEFAULT_GUI_POLICY, options);
   }
@@ -274,7 +286,7 @@ export function repairUserPolicyForGui(options: RulesPolicyOptions = {}): GuiPol
 
 export function loadPolicyConfig(options: RulesPolicyOptions = {}): PolicyConfig {
   const user = readPolicyConfig(getUserPolicyPath(options));
-  return {
+  const config: PolicyConfig = {
     safety: user.policy.safety,
     worktreeMode: user.policy.worktreeMode,
     destructiveCommandProtectionEnabled: user.policy.destructiveCommandProtectionEnabled,
@@ -282,8 +294,9 @@ export function loadPolicyConfig(options: RulesPolicyOptions = {}): PolicyConfig
     destructiveCommandAllowPaths: [...user.policy.destructiveCommandAllowPaths],
     secretProtection: user.policy.secretProtection,
     errors: user.errors,
-    ...(user.fallback ? { fallback: user.fallback } : {}),
   };
+  if (user.fallback) config.fallback = user.fallback;
+  return config;
 }
 
 /**
@@ -292,7 +305,7 @@ export function loadPolicyConfig(options: RulesPolicyOptions = {}): PolicyConfig
  * checks); invalid input keeps each recognized valid field and substitutes a
  * protective default for the rest.
  */
-export function normalizeGuiPolicy(value: unknown): GuiPolicy {
+export function normalizeGuiPolicy(value: JsonValue): GuiPolicy {
   if (!isRecord(value)) return createDefaultGuiPolicy();
 
   const safety = isRecord(value.safety) ? value.safety : {};
@@ -302,68 +315,85 @@ export function normalizeGuiPolicy(value: unknown): GuiPolicy {
     ? value.destructive_command_protection
     : {};
   const secret = isRecord(value.secret_protection) ? value.secret_protection : {};
+  const overrides: GuiPolicy['safety']['overrides'] = {};
+  if (isBoolean(safetyOverrides.fail_closed)) overrides.fail_closed = safetyOverrides.fail_closed;
+  if (isBoolean(safetyOverrides.paranoid_rm)) overrides.paranoid_rm = safetyOverrides.paranoid_rm;
+  if (isBoolean(safetyOverrides.paranoid_interpreters)) {
+    overrides.paranoid_interpreters = safetyOverrides.paranoid_interpreters;
+  }
   return {
     version: 1,
     safety: {
-      level: SAFETY_LEVELS.has(safety.level as string)
-        ? (safety.level as PolicySafetyLevel)
-        : 'standard',
-      overrides: {
-        ...(typeof safetyOverrides.fail_closed === 'boolean'
-          ? { fail_closed: safetyOverrides.fail_closed }
-          : {}),
-        ...(typeof safetyOverrides.paranoid_rm === 'boolean'
-          ? { paranoid_rm: safetyOverrides.paranoid_rm }
-          : {}),
-        ...(typeof safetyOverrides.paranoid_interpreters === 'boolean'
-          ? { paranoid_interpreters: safetyOverrides.paranoid_interpreters }
-          : {}),
-      },
+      level: normalizeSafetyLevel(safety.level),
+      overrides,
     },
     workflow: {
-      worktree_mode: typeof workflow.worktree_mode === 'boolean' ? workflow.worktree_mode : false,
+      worktree_mode: isBoolean(workflow.worktree_mode) ? workflow.worktree_mode : false,
     },
     destructive_command_protection: {
-      enabled: typeof destructiveCommand.enabled === 'boolean' ? destructiveCommand.enabled : true,
+      enabled: isBoolean(destructiveCommand.enabled) ? destructiveCommand.enabled : true,
       overrides: repairRuleOverrides(destructiveCommand.overrides, DESTRUCTIVE_COMMAND_RULE_ID_SET),
       allow_paths: repairAllowPaths(destructiveCommand.allow_paths),
     },
     secret_protection: {
-      enabled: typeof secret.enabled === 'boolean' ? secret.enabled : true,
+      enabled: isBoolean(secret.enabled) ? secret.enabled : true,
       overrides: repairRuleOverrides(secret.overrides, SECRET_PROTECTION_RULE_ID_SET),
       deny_paths: repairDenyPaths(secret.deny_paths),
     },
     audit: {
       retention_days: clampAuditRetentionDays(
-        isRecord(value.audit) ? value.audit.retention_days : undefined,
+        isRecord(value.audit) && isNumber(value.audit.retention_days)
+          ? value.audit.retention_days
+          : undefined,
       ),
     },
   };
 }
 
-function repairRuleOverrides(value: unknown, knownRuleIds: ReadonlySet<string>) {
+function repairRuleOverrides(
+  value: JsonValue | undefined,
+  knownRuleIds: ReadonlySet<string>,
+): Record<string, DestructiveCommandRuleOverride> {
   if (!isRecord(value)) return {};
   return Object.fromEntries(
     Object.entries(value).flatMap(([id, override]) =>
       knownRuleIds.has(id) && (override === 'on' || override === 'off') ? [[id, override]] : [],
     ),
-  ) as Record<string, 'on' | 'off'>;
+  );
 }
 
-function repairDenyPaths(value: unknown): string[] {
+function repairDenyPaths(value: JsonValue | undefined): string[] {
   if (!Array.isArray(value)) return [];
   const home = processHomeDir();
-  return value.filter((path): path is string => getSecretDenyPathError(path, home) === null);
+  return value.filter(isString).filter((path) => getSecretDenyPathError(path, home) === null);
 }
 
-function repairAllowPaths(value: unknown): string[] {
+function repairAllowPaths(value: JsonValue | undefined): string[] {
   if (!Array.isArray(value)) return [];
   const home = processHomeDir();
-  return value.filter((path): path is string => getDestructiveAllowPathError(path, home) === null);
+  return value.filter(isString).filter((path) => getDestructiveAllowPathError(path, home) === null);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
+function isRecord(value: JsonValue | undefined): value is { [key: string]: JsonValue } {
+  return value !== undefined && value !== null && value === Object(value) && !Array.isArray(value);
+}
+
+function isBoolean(value: JsonValue | undefined): value is boolean {
+  return value === true || value === false;
+}
+
+function isNumber(value: JsonValue | undefined): value is number {
+  return Number.isFinite(value);
+}
+
+function isString(value: JsonValue): value is string {
+  return value !== Object(value) && Object.prototype.toString.call(value) === '[object String]';
+}
+
+function normalizeSafetyLevel(value: JsonValue | undefined): PolicySafetyLevel {
+  if (value === 'strict') return value;
+  if (value === 'paranoid') return value;
+  return 'standard';
 }
 
 // Callers mutate the result, so every call needs its own containers rather than
@@ -372,11 +402,7 @@ function createDefaultGuiPolicy(): GuiPolicy {
   return structuredClone(DEFAULT_GUI_POLICY);
 }
 
-function readPolicyConfig(path: string): {
-  policy: PartialPolicy;
-  errors: string[];
-  fallback?: PolicyFallback;
-} {
+function readPolicyConfig(path: string): PolicyReadResult {
   const empty = createEmptyPolicy();
   if (!existsSync(path)) {
     // A machine with no policy file of its own — an Amp Orb — reads the snapshot that
@@ -384,9 +410,9 @@ function readPolicyConfig(path: string): {
     // like file contents would be, so home-relative paths resolve against this machine.
     // No diagnostics are computed for it: the snapshot is not an editable file the user can
     // fix here, so a malformed one degrades to protective defaults instead of reporting.
-    const embedded = (globalThis as Record<string, unknown>).__CC_SAFETY_NET_EMBEDDED_POLICY__;
-    if (!isRecord(embedded)) return { policy: empty, errors: [] };
-    return { policy: normalizePolicyConfig(normalizeGuiPolicy(embedded)), errors: [] };
+    const embedded = JsonValueSchema.safeParse(globalThis.__CC_SAFETY_NET_EMBEDDED_POLICY__);
+    if (!embedded.success || !isRecord(embedded.data)) return { policy: empty, errors: [] };
+    return { policy: normalizePolicyConfig(normalizeGuiPolicy(embedded.data)), errors: [] };
   }
 
   try {
@@ -394,7 +420,7 @@ function readPolicyConfig(path: string): {
     if (!content.trim()) {
       return { policy: empty, errors: [`${path}: Config file is empty`], fallback: 'defaults' };
     }
-    const parsed = JSON.parse(content) as unknown;
+    const parsed = JsonValueSchema.parse(JSON.parse(content));
     const errors = getUserPolicyDiagnostics(parsed);
     // Field-level normalization keeps every recognized valid section active and
     // substitutes protective defaults for the rest, so one bad field cannot

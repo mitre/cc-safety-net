@@ -19,6 +19,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
+import * as schema from 'zod';
 import { HERMES_AGENT_PLUGIN_NAME } from '@/integrations/hermes-agent/artifact';
 import { getHermesAgentPluginDir } from '@/integrations/hermes-agent/install';
 import { OPENCLAW_PLUGIN_ENTRY_FILE, OPENCLAW_PLUGIN_ID } from '@/integrations/openclaw/artifact';
@@ -30,6 +31,7 @@ import {
   expectAllowedAction,
   expectSingleAudit,
   type GateResult,
+  hermesDirectiveSchema,
   parseJsonOutput,
   readHermesDirective,
   runBuiltHost,
@@ -38,6 +40,23 @@ import {
   SESSION_PREFIX,
   withHostWorkspace,
 } from './harness';
+
+const hermesPluginResultSchema = schema.object({ directive: hermesDirectiveSchema });
+const openClawParamsSchema = schema.object({
+  command: schema.string(),
+  host: schema.enum(['gateway', 'sandbox']).optional(),
+});
+type OpenClawParams = schema.infer<typeof openClawParamsSchema>;
+const openClawHostResultSchema = schema.object({
+  id: schema.string(),
+  registration: schema.object({
+    hookName: schema.string(),
+    matcher: schema.array(schema.string()),
+    priority: schema.number(),
+  }),
+  result: schema.object({ block: schema.literal(true), blockReason: schema.string() }).nullable(),
+});
+type OpenClawHostResult = schema.infer<typeof openClawHostResultSchema>;
 
 const python3Bin = Bun.which('python3');
 
@@ -101,7 +120,7 @@ const hermesHookGate = {
       home,
     );
     return readHermesDirective(
-      stdout.trim() ? parseJsonOutput('Hermes adapter', stdout) : null,
+      stdout.trim() ? hermesDirectiveSchema.parse(parseJsonOutput('Hermes adapter', stdout)) : null,
       action,
     );
   },
@@ -183,8 +202,7 @@ const hermesPluginGate = {
       { env: { PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`, PYTHONPATH: modulesDir } },
     );
     return readHermesDirective(
-      (parseJsonOutput('Hermes plugin', stdout).directive as Record<string, unknown> | null) ??
-        null,
+      hermesPluginResultSchema.parse(parseJsonOutput('Hermes plugin', stdout)).directive,
       action,
     );
   },
@@ -241,23 +259,18 @@ describe('packaged OpenClaw plugin protection through the built plugin directory
   });
 });
 
-function runOpenClawHost(
-  params: Record<string, unknown>,
-  cwd: string,
-  home: string,
-  sessionId: string,
-) {
+function runOpenClawHost(params: OpenClawParams, cwd: string, home: string, sessionId: string) {
   return runBuiltHost(
     openClawEntryPath,
     OPENCLAW_HOST_SCRIPT,
     { toolName: 'exec', params, agentId: 'main', sessionId, workspaceDir: cwd },
     cwd,
     home,
-  );
+  ).then((output) => openClawHostResultSchema.parse(output));
 }
 
-function readOpenClawResult(output: Record<string, unknown>, action: () => void): GateResult {
-  const result = output.result as Record<string, unknown> | null;
+function readOpenClawResult(output: OpenClawHostResult, action: () => void): GateResult {
+  const result = output.result;
   if (!result) {
     action();
     return { allowed: true };

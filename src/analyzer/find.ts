@@ -342,10 +342,12 @@ function analyzeFindExecCommand(
   return null;
 }
 
-export function getFindExecCommand(
-  tokens: readonly string[],
-  execIndex: number,
-): { tokens: string[]; nextIndex: number } {
+interface FindExecCommand {
+  tokens: string[];
+  nextIndex: number;
+}
+
+export function getFindExecCommand(tokens: readonly string[], execIndex: number): FindExecCommand {
   let terminatorIndex = execIndex + 1;
   while (
     terminatorIndex < tokens.length &&

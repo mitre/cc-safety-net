@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { runRulesMigrate } from '@/cli/rule/migrate';
 import { withEnv, withTempDir } from '../../helpers';
 
-function writeJson(path: string, value: unknown) {
+type JsonFixture = Parameters<typeof JSON.stringify>[0];
+
+function writeJson(path: string, value: JsonFixture) {
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, JSON.stringify(value));
 }

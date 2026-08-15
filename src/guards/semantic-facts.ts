@@ -37,7 +37,7 @@ const PATH_LIKE_KEYS = new Set([
 ]);
 const GREP_KEYS = new Set([...PATH_LIKE_KEYS, 'glob']);
 const GLOB_KEYS = new Set([...GREP_KEYS, 'pattern']);
-const EMPTY_SHELL_SYNTAX_ENTRIES = Object.freeze([]) as readonly ShellSyntaxEntry[];
+const EMPTY_SHELL_SYNTAX_ENTRIES = Object.freeze<ShellSyntaxEntry[]>([]);
 
 export type FactParserDependencies = {
   parseCommand: typeof parseCommand;
@@ -97,16 +97,17 @@ export function createSemanticFacts(
     return facts;
   }, []);
 
+  const context = {
+    ...invocation.context,
+    policyConfigCwds: invocation.context.policyConfigCwds
+      ? Object.freeze([...invocation.context.policyConfigCwds])
+      : undefined,
+  };
   return Object.freeze({
     invocation: Object.freeze({
       toolName: invocation.toolName,
       route: Object.freeze({ ...invocation.route }),
-      context: Object.freeze({
-        ...invocation.context,
-        ...(invocation.context.policyConfigCwds
-          ? { policyConfigCwds: Object.freeze([...invocation.context.policyConfigCwds]) }
-          : {}),
-      }),
+      context: Object.freeze(context),
     }),
     commands: Object.freeze(commands),
     paths: Object.freeze(extractDirectPathFacts(invocation)),
@@ -156,7 +157,7 @@ export function createSemanticFactStore(
         status: 'structural-limit' as const,
         source,
         entries: EMPTY_SHELL_SYNTAX_ENTRIES,
-        assignmentFallbacks: Object.freeze([]) as readonly string[],
+        assignmentFallbacks: Object.freeze<string[]>([]),
       });
       structuralLimitFacts.set(program, syntax);
       return syntax;

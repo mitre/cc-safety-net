@@ -4,13 +4,23 @@
  */
 
 import * as readline from 'node:readline';
+import type { Readable } from 'node:stream';
 import { colors } from '@/cli/utils/colors';
 import type { InstallTargetChoice } from '@/integrations/install/choices';
 import type { InstallAction, InstallTarget } from '@/integrations/install/targets';
 
+export type InstallPromptInput = Readable & {
+  readonly isRaw?: boolean;
+  readonly isTTY?: boolean;
+  setRawMode(mode: boolean): void;
+};
+type InstallPromptOutput = NodeJS.WritableStream & {
+  readonly isTTY?: boolean;
+};
+
 type InstallPromptOptions = {
-  input?: NodeJS.ReadStream;
-  output?: NodeJS.WriteStream;
+  input?: InstallPromptInput;
+  output?: InstallPromptOutput;
   /** Test seam for Ctrl-C, which otherwise raises SIGINT on this process. */
   onInterrupt?: () => void;
 };
@@ -18,6 +28,11 @@ type InstallPromptOptions = {
 type InstallSelectionState = {
   cursor: number;
   selected: readonly InstallTarget[];
+};
+
+type InstallSelectionTransition = {
+  state: InstallSelectionState;
+  done?: 'confirm' | 'update' | 'abort' | 'interrupt';
 };
 
 type InstallSelectionKey = 'up' | 'down' | 'toggle' | 'confirm' | 'update' | 'abort' | 'interrupt';
@@ -58,11 +73,13 @@ function nextSelectableCursor(
   cursor: number,
   direction: -1 | 1,
 ): number {
-  if (choices.length === 0 || choices.every((choice) => !choice.available)) return cursor;
+  if (choices.every((choice) => !choice.available)) return cursor;
 
-  return Array.from({ length: choices.length }, (_, index) => index + 1)
-    .map((offset) => (cursor + offset * direction + choices.length) % choices.length)
-    .find((index) => isAvailable(choices[index])) as number;
+  return (
+    Array.from({ length: choices.length }, (_, index) => index + 1)
+      .map((offset) => (cursor + offset * direction + choices.length) % choices.length)
+      .find((index) => isAvailable(choices[index])) ?? cursor
+  );
 }
 
 function mapKeyPress(
@@ -93,7 +110,7 @@ function reduceInstallSelectionState(
   state: InstallSelectionState,
   choices: readonly InstallTargetChoice[],
   key: InstallSelectionKey,
-): { state: InstallSelectionState; done?: 'confirm' | 'update' | 'abort' | 'interrupt' } {
+): InstallSelectionTransition {
   if (key === 'confirm' || key === 'update' || key === 'abort' || key === 'interrupt')
     return { state, done: key };
 
@@ -201,8 +218,8 @@ type PromptFrameControls<T> = {
 
 /** Runs a raw-mode keypress prompt that owns frame redraws and terminal state restoration. */
 function promptFramedSelection<T>(config: {
-  input: NodeJS.ReadStream;
-  output: NodeJS.WriteStream;
+  input: InstallPromptInput;
+  output: InstallPromptOutput;
   render: () => string;
   onKey: (inputValue: string, key: KeyPress, controls: PromptFrameControls<T>) => void;
 }): Promise<T> {
@@ -267,7 +284,8 @@ export function promptKimiInstallMethod(
       }
       if (key.name === 'escape' || inputValue === 'q') return controls.finish(null);
       if (key.name === 'return' || key.name === 'enter') {
-        return controls.finish(KIMI_METHODS[cursor] as KimiInstallMethod);
+        const method = KIMI_METHODS[cursor];
+        if (method) return controls.finish(method);
       }
       if (key.name === 'up' || key.name === 'down' || inputValue === 'k' || inputValue === 'j') {
         // With two rows, any move flips the cursor, so up from the top wraps to the bottom.
@@ -279,10 +297,10 @@ export function promptKimiInstallMethod(
 }
 
 export function canPromptInstallTargets(
-  input: NodeJS.ReadStream = process.stdin,
-  output: NodeJS.WriteStream = process.stdout,
+  input: InstallPromptInput = process.stdin,
+  output: InstallPromptOutput = process.stdout,
 ): boolean {
-  return Boolean(input.isTTY && output.isTTY && typeof input.setRawMode === 'function');
+  return Boolean(input.isTTY && output.isTTY);
 }
 
 export function promptInstallTargets(

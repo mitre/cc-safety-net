@@ -64,7 +64,7 @@ const inlineZod: BunPlugin = {
       const source = await Bun.file(args.path).text();
       const replacements: Array<[string, string]> = [
         ["import type * as Zod from 'zod';", "import * as Zod from 'zod';"],
-        ["const z = require('zod') as typeof Zod;", 'const z = Zod;'],
+        ["const z: typeof Zod = require('zod');", 'const z = Zod;'],
       ];
       const contents = replacements.reduce((current, [from, to]) => {
         if (!current.includes(from)) throw new Error(`inline-zod: missing "${from}"`);
@@ -86,10 +86,10 @@ const vendorZod: BunPlugin = {
   setup(build) {
     build.onLoad({ filter: /src[\\/]policy[\\/]schema\.ts$/ }, async (args) => {
       const source = await Bun.file(args.path).text();
-      const from = "const z = require('zod') as typeof Zod;";
+      const from = "const z: typeof Zod = require('zod');";
       if (!source.includes(from)) throw new Error(`vendor-zod: missing "${from}"`);
       return {
-        contents: source.replace(from, "const z = require('../vendor/zod.cjs') as typeof Zod;"),
+        contents: source.replace(from, "const z: typeof Zod = require('../vendor/zod.cjs');"),
         loader: 'ts',
       };
     });

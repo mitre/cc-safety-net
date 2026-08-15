@@ -143,7 +143,7 @@ describe('envFlagIsSet', () => {
 });
 
 describe('audit scope', () => {
-  test.each([
+  const cases = [
     [undefined, 'all', true],
     ['all', 'all', true],
     ['blocked', 'blocked', false],
@@ -151,10 +151,14 @@ describe('audit scope', () => {
     ['', 'invalid', false],
     ['ALL', 'invalid', false],
     ['Blocked', 'invalid', false],
-  ])('%p resolves to %p and records allowed commands: %p', (value, scope, recordsAllowed) => {
+  ] as const;
+
+  test.each(
+    cases,
+  )('%p resolves to %p and records allowed commands: %p', (value, scope, recordsAllowed) => {
     withEnv({ CC_SAFETY_NET_AUDIT_SCOPE: value }, () => {
-      expect(resolveAuditScope(value)).toBe(scope as 'all' | 'blocked' | 'invalid');
-      expect(shouldRecordAllowedCommands()).toBe(recordsAllowed as boolean);
+      expect(resolveAuditScope(value)).toBe(scope);
+      expect(shouldRecordAllowedCommands()).toBe(recordsAllowed);
     });
   });
 
@@ -310,8 +314,8 @@ describe('invalid CC_SAFETY_NET_LEVEL reporting', () => {
   function collectStderr(value: string | undefined) {
     if (value === undefined) delete process.env.CC_SAFETY_NET_LEVEL;
     if (value !== undefined) process.env.CC_SAFETY_NET_LEVEL = value;
-    const messages: unknown[] = [];
-    const spy = spyOn(console, 'error').mockImplementation((message: unknown) => {
+    const messages: string[] = [];
+    const spy = spyOn(console, 'error').mockImplementation((message: string) => {
       messages.push(message);
     });
     getCCSafetyNetEnvModes();

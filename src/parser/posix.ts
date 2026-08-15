@@ -62,6 +62,15 @@ type LexicalScanState = {
   double: boolean;
 };
 
+type PendingCommandRedirection = {
+  kind: 'redirection';
+  operator: string;
+  span: { start: number; end: number };
+  fd?: number;
+  target?: CommandWord;
+  heredoc?: CommandRedirection['heredoc'];
+};
+
 const CONTINUATION_CONNECTORS = new Set(['&&', '||', '|', '|&']);
 
 export function parsePosixCommand(
@@ -373,20 +382,13 @@ function scanSequence(
         }
       }
       const redirectEnd = targetResult?.next ?? i + redirect.length;
-      const redirection: {
-        kind: 'redirection';
-        operator: string;
-        span: { start: number; end: number };
-        fd?: number;
-        target?: CommandWord;
-        heredoc?: CommandRedirection['heredoc'];
-      } = {
+      const redirection: PendingCommandRedirection = {
         kind: 'redirection',
         operator: redirect,
         span: { start: redirectStart, end: redirectEnd },
-        ...(attachedFd === undefined ? {} : { fd: attachedFd }),
-        ...(targetResult ? { target: targetResult.word } : {}),
       };
+      if (attachedFd !== undefined) redirection.fd = attachedFd;
+      if (targetResult) redirection.target = targetResult.word;
       accumulator.redirections.push(redirection);
       if (redirect === '<<' || redirect === '<<-') {
         if (!delimiter) {

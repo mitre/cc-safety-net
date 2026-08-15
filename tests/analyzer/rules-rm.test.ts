@@ -968,13 +968,11 @@ describe('analyzeRm (unit)', () => {
   });
 
   test('handles non-string cwd defensively', () => {
-    const badCwd = 1 as unknown as string;
-    expect(analyzeRm(['rm', '-rf', 'foo'], { cwd: badCwd })).toContain('rm -rf outside cwd');
+    expect(analyzeRm(['rm', '-rf', 'foo'], malformedCwdOptions())).toContain('rm -rf outside cwd');
   });
 
   test('handles absolute-path checks defensively', () => {
-    const badCwd = 1 as unknown as string;
-    expect(analyzeRm(['rm', '-rf', '/abs'], { cwd: badCwd })).toContain('rm -rf outside cwd');
+    expect(analyzeRm(['rm', '-rf', '/abs'], malformedCwdOptions())).toContain('rm -rf outside cwd');
   });
 
   test('blocks tilde-prefixed paths (not cwd-relative)', () => {
@@ -1020,8 +1018,9 @@ describe('analyzeRm (unit)', () => {
 
   test('handles paths with separators and bad cwd defensively', () => {
     // 'foo/bar' has separators but doesn't start with ./, hitting the final try-catch (line 317)
-    const badCwd = 1 as unknown as string;
-    expect(analyzeRm(['rm', '-rf', 'foo/bar'], { cwd: badCwd })).toContain('rm -rf outside cwd');
+    expect(analyzeRm(['rm', '-rf', 'foo/bar'], malformedCwdOptions())).toContain(
+      'rm -rf outside cwd',
+    );
   });
 
   test.skipIf(process.platform !== 'win32')(
@@ -1073,3 +1072,12 @@ describe('analyzeRm (unit)', () => {
     },
   );
 });
+
+function malformedCwdOptions() {
+  return new Proxy(
+    { cwd: '' },
+    {
+      get: () => 1,
+    },
+  );
+}

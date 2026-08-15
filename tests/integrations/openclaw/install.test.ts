@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { delimiter, join } from 'node:path';
+import { z } from 'zod';
 import {
   buildOpenClawArtifactHeader,
   buildOpenClawPluginManifests,
@@ -37,6 +38,21 @@ import { runCli } from '../hook-helpers';
 const ENTRY_FILE = 'index.js';
 const MANIFEST_FILE = 'openclaw.plugin.json';
 const PACKAGE_FILE = 'package.json';
+const generatedConfigSchema = z
+  .object({
+    id: z.string().optional(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    version: z.string().optional(),
+  })
+  .catchall(z.json());
+const rawOpenClawConfigSchema = z.string();
+
+type OpenClawPluginsConfig = {
+  allow?: string[];
+  deny?: string[];
+  enabled?: boolean;
+};
 
 function withHome<T>(fn: (homeDir: string) => T | Promise<T>) {
   return withTempDir('safety-net-openclaw-', fn);
@@ -49,7 +65,7 @@ function detectOpenClaw(homeDir: string) {
 function generatedFile(version: string, name: string) {
   const file = buildOpenClawPluginManifests(version).find((entry) => entry.name === name);
   if (!file) throw new Error(`missing generated file ${name}`);
-  return JSON.parse(file.content);
+  return generatedConfigSchema.parse(JSON.parse(file.content));
 }
 
 /**
@@ -87,15 +103,16 @@ function packagedArtifactVersion() {
   return version;
 }
 
-function writeOpenClawConfig(homeDir: string, config: unknown) {
+function writeOpenClawConfig(homeDir: string, config: z.input<typeof z.json> | string) {
   mkdirSync(join(homeDir, '.openclaw'), { recursive: true });
   const path = join(homeDir, '.openclaw', 'openclaw.json');
-  writeFileSync(path, typeof config === 'string' ? config : JSON.stringify(config, null, 2));
+  const rawConfig = rawOpenClawConfigSchema.safeParse(config);
+  writeFileSync(path, rawConfig.success ? rawConfig.data : JSON.stringify(config, null, 2));
   return path;
 }
 
 /** The config state `openclaw plugins enable cc-safety-net` leaves behind. */
-function enableOpenClawPlugin(homeDir: string, plugins: Record<string, unknown> = {}) {
+function enableOpenClawPlugin(homeDir: string, plugins: OpenClawPluginsConfig = {}) {
   return writeOpenClawConfig(homeDir, {
     plugins: { entries: { [OPENCLAW_PLUGIN_ID]: { enabled: true } }, ...plugins },
   });
@@ -154,8 +171,8 @@ describe('OpenClaw plugin artifact', () => {
 
     expect(manifest.id).toBe(OPENCLAW_PLUGIN_ID);
     expect(manifest.version).toBe('9.9.9');
-    expect(typeof manifest.name).toBe('string');
-    expect(typeof manifest.description).toBe('string');
+    expect(z.string().safeParse(manifest.name).success).toBeTrue();
+    expect(z.string().safeParse(manifest.description).success).toBeTrue();
     // Required by OpenClaw for every native plugin, even with no config.
     expect(manifest.configSchema).toEqual({
       type: 'object',
@@ -192,7 +209,7 @@ describe('OpenClaw plugin artifact', () => {
       },
     });
 
-    expect(openClawPluginEntry.id).toBe(generatedFile(getPackageVersion(), MANIFEST_FILE).id);
+    expect(generatedFile(getPackageVersion(), MANIFEST_FILE).id).toBe(openClawPluginEntry.id);
     expect(registered).toEqual([
       { hook: 'before_tool_call', opts: { matcher: ['exec'], priority: 50 } },
     ]);

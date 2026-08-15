@@ -10,18 +10,23 @@ import type {
 } from '@/ir/command';
 
 export function createCommandNodes() {
-  return [] as CommandNode[];
+  const nodes: CommandNode[] = [];
+  return nodes;
 }
 
 export function createCommandIssues() {
-  return [] as CommandIssue[];
+  const issues: CommandIssue[] = [];
+  return issues;
 }
 
 export function createCommandAccumulator() {
+  const words: CommandWord[] = [];
+  const redirections: CommandRedirection[] = [];
+  const nested: CommandProgram[] = [];
   return {
-    words: [] as CommandWord[],
-    redirections: [] as CommandRedirection[],
-    nested: [] as CommandProgram[],
+    words,
+    redirections,
+    nested,
     start: -1,
     end: -1,
     reset() {
@@ -41,21 +46,21 @@ export function freezeCommandView(command: CommandView): CommandView {
     span: Object.freeze(command.span),
     words: Object.freeze(command.words),
     redirections: Object.freeze(
-      command.redirections.map((redirection) =>
-        Object.freeze({
+      command.redirections.map((redirection) => {
+        const frozen = {
           ...redirection,
           span: Object.freeze(redirection.span),
-          ...(redirection.heredoc
-            ? {
-                heredoc: Object.freeze({
-                  ...redirection.heredoc,
-                  bodySpan: Object.freeze(redirection.heredoc.bodySpan),
-                  terminatorSpan: Object.freeze(redirection.heredoc.terminatorSpan),
-                }),
-              }
-            : {}),
-        }),
-      ),
+        };
+        if (!redirection.heredoc) return Object.freeze(frozen);
+        return Object.freeze({
+          ...frozen,
+          heredoc: Object.freeze({
+            ...redirection.heredoc,
+            bodySpan: Object.freeze(redirection.heredoc.bodySpan),
+            terminatorSpan: Object.freeze(redirection.heredoc.terminatorSpan),
+          }),
+        });
+      }),
     ),
     nested: Object.freeze(command.nested.map((program) => freezeCommandProgram(program))),
   });
@@ -120,14 +125,15 @@ export function freezeParsedCommandWord(
   quoted: boolean,
   parts?: CommandWordPart[],
 ) {
-  return freezeCommandWord({
+  const word = {
     text,
     raw: source.slice(start, end),
     span: { start, end },
     provenance,
     quoted,
-    ...(parts ? { parts } : {}),
-  });
+  };
+  if (!parts) return freezeCommandWord(word);
+  return freezeCommandWord({ ...word, parts });
 }
 
 export function freezeCommandProgram(program: CommandProgram): CommandProgram {

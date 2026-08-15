@@ -120,7 +120,7 @@ type PathListConfig = {
   setPaths: (paths: string[]) => void;
   isDisabled: () => boolean;
   itemLabel: string;
-  validateAdditions?: (paths: string[]) => Promise<unknown>;
+  validateAdditions?: (paths: string[]) => Promise<string | null>;
 };
 type ConfirmOptions = {
   title: string;
@@ -131,15 +131,9 @@ type ConfirmOptions = {
 };
 
 // The one value the server injects per request, carried in a JSON data tag.
-// page.html always ships the tag with its payload, so it is read as present —
-// the same call the qs() helper below makes for every other element.
-const token = (
-  JSON.parse((document.getElementById('ccsn-data') as HTMLElement).textContent as string) as {
-    token: string;
-  }
-).token;
+const token = JSON.parse(document.getElementById('ccsn-data')?.textContent ?? '').token;
 const fallbackRepoUrl = 'https://github.com/kenryu42/cc-safety-net';
-const safetyLevels: Record<SafetyLevel, [string, string]> = {
+const safetyLevels = {
   standard: [
     'Standard',
     'Blocks recognizable destructive commands and sensitive content access while allowing metadata-only sensitive-path checks. Recommended for normal coding.',
@@ -152,12 +146,14 @@ const safetyLevels: Record<SafetyLevel, [string, string]> = {
     'Paranoid',
     'Strict, plus blocks rm -rf inside your project and interpreter one-liners. Expect friction; for untrusted agents or high-stakes repos.',
   ],
-};
-const safetyOverrides: Record<Capability, [string, string]> = {
+} satisfies Record<SafetyLevel, [string, string]>;
+const safetyLevelNames = ['standard', 'strict', 'paranoid'] as const;
+const safetyOverrides = {
   fail_closed: ['Fail closed', 'Block commands the parser cannot fully understand.'],
   paranoid_rm: ['Paranoid rm -rf checks', 'Block non-temp rm -rf inside the project.'],
   paranoid_interpreters: ['Paranoid interpreters', 'Block interpreter one-liners.'],
-};
+} satisfies Record<Capability, [string, string]>;
+const capabilityNames = ['fail_closed', 'paranoid_rm', 'paranoid_interpreters'] as const;
 const rawCopyIcons = {
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2h8c1.1 0 2 .9 2 2"></path></svg>',
   check:
@@ -220,7 +216,7 @@ const api = (path: string, init: RequestInit = {}) =>
     headers: {
       'content-type': 'application/json',
       'x-cc-safety-net-token': token,
-      ...(init.headers || {}),
+      ...init.headers,
     },
   });
 // Both outcomes carry both fields so a caller can read either without proving
@@ -257,19 +253,20 @@ const isWriteSuccess = (result: RequestResult) =>
   result.ok && !(Array.isArray(result.data?.errors) && result.data.errors.length > 0);
 const isPolicyState = (value: PolicyState | undefined): value is PolicyState =>
   !!value &&
-  typeof value === 'object' &&
   !!value.policy &&
-  typeof value.policy === 'object' &&
   !!value.policy.safety &&
   !!value.policy.workflow &&
   !!value.policy.secret_protection &&
   Array.isArray(value.destructiveCommandRules) &&
   Array.isArray(value.secretPatterns) &&
-  (value.preview === null || (value.preview && typeof value.preview === 'object')) &&
+  (value.preview === null || !!value.preview) &&
   Array.isArray(value.errors);
-// Every id this reads is in page.html, so the element is asserted rather than
-// null-checked at each of the call sites.
-const qs = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+// Every id this reads is in page.html, so centralize the malformed-page check.
+const qs = <T extends HTMLElement = HTMLElement>(id: string) => {
+  const element = document.querySelector<T>(`#${CSS.escape(id)}`);
+  if (!element) throw new Error(`Missing page element: ${id}`);
+  return element;
+};
 const setDetailStatus = (text: string, kind = '') => {
   qs('status').textContent = text;
   qs('status').className = `status ${kind}`;
@@ -310,7 +307,7 @@ const syncMasterBadges = () => {
     if (badge) badge.textContent = input.checked ? 'On' : 'Off';
   });
 };
-const escapeHtml = (value: unknown) =>
+const escapeHtml = (value: string | number | null | undefined) =>
   String(value).replace(
     /[&<>"']/g,
     (char) =>
@@ -328,16 +325,16 @@ const pathLines = (value: string) =>
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
-const formatPolicy = (policy: unknown) => `${JSON.stringify(policy, null, 2)}\n`;
+const formatPolicy = (policy: Policy) => `${JSON.stringify(policy, null, 2)}\n`;
 const collectFormPolicy = () => ({
   version: 1,
   safety: {
     level: draftPolicy.safety.level,
-    overrides: Object.fromEntries(
-      Object.entries(draftPolicy.safety.overrides).filter(
-        ([, value]) => typeof value === 'boolean',
-      ),
-    ),
+    overrides: {
+      fail_closed: draftPolicy.safety.overrides.fail_closed,
+      paranoid_rm: draftPolicy.safety.overrides.paranoid_rm,
+      paranoid_interpreters: draftPolicy.safety.overrides.paranoid_interpreters,
+    },
   },
   workflow: draftPolicy.workflow,
   destructive_command_protection: draftPolicy.destructive_command_protection,
@@ -355,17 +352,17 @@ const requestPolicyPreview = (policy = collectFormPolicy()) =>
   });
 const viewNames = ['overview', 'activity', 'policy', 'rules', 'integrations', 'settings'] as const;
 type ViewName = (typeof viewNames)[number];
-const viewTitles: Record<ViewName, string> = {
+const viewTitles = {
   overview: 'Overview',
   activity: 'Activity',
   policy: 'Policy',
   rules: 'Rules',
   integrations: 'Integrations',
   settings: 'Settings',
-};
+} satisfies Record<ViewName, string>;
 const currentView = (): ViewName => {
-  const hash = location.hash.replace('#', '') as ViewName;
-  return viewNames.includes(hash) ? hash : 'overview';
+  const hash = location.hash.replace('#', '');
+  return viewNames.find((view) => view === hash) ?? 'overview';
 };
 const applyView = () => {
   const view = currentView();
@@ -402,11 +399,7 @@ const applyView = () => {
   if (view === 'rules' && rulesData && pendingRuleFocus) renderRules();
 };
 const isActivityFeed = (value: ActivityFeed | undefined): value is ActivityFeed =>
-  !!value &&
-  typeof value === 'object' &&
-  Array.isArray(value.entries) &&
-  !!value.counts &&
-  typeof value.counts === 'object';
+  !!value && Array.isArray(value.entries) && !!value.counts && !Array.isArray(value.counts);
 const agentLabels: Record<string, string> = integrationDisplayNames;
 const tierCountHtml = (segments: [number, string, string?][]) => {
   const parts = segments
@@ -521,8 +514,8 @@ const renderProtectionCard = () => {
   const policy = state.policy;
   const customized =
     state.preview.counts.effectiveCustomizations > 0 ||
-    Object.entries(policy.safety.overrides).some(
-      ([key, value]) => value !== levelCapabilities(policy.safety.level)[key as Capability],
+    capabilityNames.some(
+      (key) => policy.safety.overrides[key] !== levelCapabilities(policy.safety.level)[key],
     );
   const commandsOn = policy.destructive_command_protection.enabled;
   const secretsOn = policy.secret_protection.enabled;
@@ -1133,10 +1126,7 @@ const buildReportUrl = (fields: Record<string, string>) => {
 // GitHub rejects the entire link past the cap, so the largest field is dropped
 // until the rest fits. Dropping one is not always enough: `entry` embeds the
 // command, so a long command still overflows once the entry is gone.
-const buildReportRequest = (
-  fields: Record<string, string>,
-  dropped: string[] = [],
-): { url: string; dropped: string[] } => {
+const buildReportRequest = (fields: Record<string, string>, dropped: string[] = []) => {
   const url = buildReportUrl(fields);
   if (url.length <= reportUrlLimit) return { url, dropped };
   const largest = Object.entries(fields)
@@ -1154,24 +1144,38 @@ const openReportDialog = (button: HTMLElement) => {
   // Windows JSON.stringify doubles every backslash, so a cwd of C:\Users\... would
   // never match its own needle and the entry would ship unscrubbed.
   qs<HTMLTextAreaElement>('report-entry').value = JSON.stringify(
-    entry,
-    (_key, value) => (typeof value === 'string' ? scrub(value) : value),
+    {
+      ...entry,
+      ts: scrub(entry.ts),
+      decision: scrub(entry.decision),
+      agent: entry.agent ? scrub(entry.agent) : entry.agent,
+      ruleId: entry.ruleId ? scrub(entry.ruleId) : entry.ruleId,
+      segment: entry.segment ? scrub(entry.segment) : entry.segment,
+      command: entry.command ? scrub(entry.command) : entry.command,
+      reason: entry.reason ? scrub(entry.reason) : entry.reason,
+      failureStage: entry.failureStage ? scrub(entry.failureStage) : entry.failureStage,
+      sessionId: entry.sessionId ? scrub(entry.sessionId) : entry.sessionId,
+      cwd: entry.cwd ? scrub(entry.cwd) : entry.cwd,
+    },
+    null,
     2,
   );
   qs<HTMLDialogElement>('report-dialog').returnValue = 'cancel';
   qs<HTMLDialogElement>('report-dialog').showModal();
 };
 const openFalsePositiveForm = async () => {
-  const fields: Record<string, string> = {
+  const fields = {
     command: qs<HTMLTextAreaElement>('report-command').value,
     entry: qs<HTMLTextAreaElement>('report-entry').value,
-  };
+  } satisfies Record<string, string>;
   const request = buildReportRequest(fields);
   // Start the copy before the new tab takes focus, and open in the same task so
   // the click that submitted the dialog still counts as user activation.
   const copying = request.dropped.length
     ? navigator.clipboard.writeText(
-        request.dropped.map((field) => `### ${field}\n${fields[field]}`).join('\n\n'),
+        request.dropped
+          .map((field) => `### ${field}\n${field === 'command' ? fields.command : fields.entry}`)
+          .join('\n\n'),
       )
     : null;
   window.open(request.url, '_blank', 'noopener');
@@ -1220,7 +1224,7 @@ const copyRawToClipboard = async () => {
   }
 };
 const formatStarCount = (count: number | null) => {
-  if (typeof count !== 'number') return '';
+  if (count === null) return '';
   if (count >= 1000) return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k`;
   return String(count);
 };
@@ -1437,19 +1441,18 @@ const setSecretOverride = (rule: SecretRule, active: boolean) => {
   }
   draftPolicy.secret_protection.overrides[rule.id] = active ? 'on' : 'off';
 };
-const groupRules = <T extends { category: string }>(rules: T[]) =>
-  rules.reduce(
-    (groups, rule) => {
-      const group = groups.find((item) => item.category === rule.category);
-      if (group) {
-        group.rules.push(rule);
-        return groups;
-      }
-      groups.push({ category: rule.category, rules: [rule] });
+const groupRules = <T extends { category: string }>(rules: T[]) => {
+  const initialGroups: { category: string; rules: T[] }[] = [];
+  return rules.reduce((groups, rule) => {
+    const group = groups.find((item) => item.category === rule.category);
+    if (group) {
+      group.rules.push(rule);
       return groups;
-    },
-    [] as { category: string; rules: T[] }[],
-  );
+    }
+    groups.push({ category: rule.category, rules: [rule] });
+    return groups;
+  }, initialGroups);
+};
 const renderSecretPatterns = () => {
   if (!state) return;
   // The group callback below is a closure, where the module-level policy state
@@ -1537,8 +1540,9 @@ const renderPresetStatus = () => {
   if (!preview) return;
   const customized =
     preview.counts.effectiveCustomizations > 0 ||
-    Object.entries(draftPolicy.safety.overrides).some(
-      ([key, value]) => value !== levelCapabilities(draftPolicy.safety.level)[key as Capability],
+    capabilityNames.some(
+      (key) =>
+        draftPolicy.safety.overrides[key] !== levelCapabilities(draftPolicy.safety.level)[key],
     );
   qs('safety-preset-status').textContent = customized ? `${presetName()} · Customized` : '';
   qs('safety-preset-status').classList.toggle('customized', customized);
@@ -1566,10 +1570,11 @@ const renderSafety = () => {
     )
     .join('');
   const inherited = levelCapabilities(draftPolicy.safety.level);
-  qs('safety-overrides').innerHTML = Object.entries(safetyOverrides)
-    .map(([key, meta]) => {
-      const value = draftPolicy.safety.overrides[key as Capability];
-      const inheritedText = inherited[key as Capability] ? 'on' : 'off';
+  qs('safety-overrides').innerHTML = capabilityNames
+    .map((key) => {
+      const meta = safetyOverrides[key];
+      const value = draftPolicy.safety.overrides[key];
+      const inheritedText = inherited[key] ? 'on' : 'off';
       return `<label class="row safety-override-row"><span><strong>${meta[0]}</strong><small>${meta[1]}</small></span><select data-safety-override="${key}">
       <option value="inherit" ${value === undefined ? 'selected' : ''}>Inherit from preset (${inheritedText})</option>
       <option value="true" ${value === true ? 'selected' : ''}>Force on</option>
@@ -1585,11 +1590,12 @@ const tierForRule = (rule: DestructiveRule): Tier => {
   if (!rule.activationCapability) return 'normal';
   return rule.activationCapability === 'fail_closed' ? 'strict' : 'paranoid';
 };
-const tierMeta: Record<Tier, [string, string]> = {
+const tierMeta = {
   normal: ['Available in every preset', 'No additional capability required'],
   strict: ['Strict tier', 'Inherits from Fail closed'],
   paranoid: ['Paranoid tier', 'Inherits from Paranoid rm or Paranoid interpreters'],
-};
+} satisfies Record<Tier, [string, string]>;
+const tiers = ['normal', 'strict', 'paranoid'] as const;
 const ruleStateText = (
   rule: DestructiveRule,
   effective: RuleState,
@@ -1707,7 +1713,7 @@ const renderDestructiveCommands = () => {
     matchingRules.length === 0
       ? '<p class="empty">No built-in protections match the search.</p>'
       : enforcedSection +
-        (Object.keys(tierMeta) as Tier[])
+        tiers
           .map((tier) => {
             const rules = configurableRules.filter((rule) => tierForRule(rule) === tier);
             if (rules.length === 0) return '';
@@ -1901,14 +1907,14 @@ const restoreDraft = () => {
   })();
   // 'audit' is listed so a draft stored before the field existed is discarded
   // rather than restored and saved back over the configured retention.
-  const isPolicyShape = [
+  const isStoredPolicy = [
     'safety',
     'workflow',
     'destructive_command_protection',
     'secret_protection',
     'audit',
-  ].every((key) => parsed && typeof parsed[key] === 'object' && parsed[key] !== null);
-  if (!isPolicyShape || stored === JSON.stringify(state.policy)) {
+  ].every((key) => parsed?.[key] && !Array.isArray(parsed[key]));
+  if (!isStoredPolicy || stored === JSON.stringify(state.policy)) {
     sessionStorage.removeItem('cc-safety-net-draft');
     return;
   }
@@ -2063,7 +2069,9 @@ document.addEventListener('change', (event) => {
     return;
   }
   if (control.name === 'safety-level') {
-    draftPolicy.safety.level = control.value as SafetyLevel;
+    const level = safetyLevelNames.find((candidate) => candidate === control.value);
+    if (!level) return;
+    draftPolicy.safety.level = level;
     renderSafety();
     syncRawFromForm();
     updateDirtyStatus();
@@ -2071,12 +2079,13 @@ document.addEventListener('change', (event) => {
     return;
   }
   if (control.dataset?.safetyOverride) {
-    if (control.value === 'inherit')
-      delete draftPolicy.safety.overrides[control.dataset.safetyOverride as Capability];
-    if (control.value === 'true')
-      draftPolicy.safety.overrides[control.dataset.safetyOverride as Capability] = true;
-    if (control.value === 'false')
-      draftPolicy.safety.overrides[control.dataset.safetyOverride as Capability] = false;
+    const capability = capabilityNames.find(
+      (candidate) => candidate === control.dataset.safetyOverride,
+    );
+    if (!capability) return;
+    if (control.value === 'inherit') delete draftPolicy.safety.overrides[capability];
+    if (control.value === 'true') draftPolicy.safety.overrides[capability] = true;
+    if (control.value === 'false') draftPolicy.safety.overrides[capability] = false;
     syncRawFromForm();
     updateDirtyStatus();
     void refreshPolicyPreview();
@@ -2289,8 +2298,9 @@ document.addEventListener('click', (event) => {
   const chip = target.closest<HTMLElement>('[data-activity-chip]');
   if (chip && activity) {
     clearCommandFilter();
-    activityFilters[chip.dataset.activityChip as 'decision' | 'agent'] =
-      chip.dataset.chipValue ?? '';
+    const filter = chip.dataset.activityChip;
+    if (filter !== 'decision' && filter !== 'agent') return;
+    activityFilters[filter] = chip.dataset.chipValue ?? '';
     renderActivityControls();
     renderActivityFeed();
     return;
@@ -2568,14 +2578,17 @@ setRawCopyCopied(false);
 qs<HTMLButtonElement>('raw-copy').onclick = () => {
   void copyRawToClipboard();
 };
-const themeOrder: ThemePref[] = ['auto', 'light', 'dark'];
-const themeIcons: Record<ThemePref, string> = {
+const themeOrder = ['auto', 'light', 'dark'] as const;
+const themeIcons = {
   auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"></rect><path d="M8 20h8M12 16v4"></path></svg>',
   light:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"></path></svg>',
   dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>',
-};
-const themeLabels: Record<ThemePref, string> = { auto: 'Auto', light: 'Light', dark: 'Dark' };
+} satisfies Record<ThemePref, string>;
+const themeLabels = { auto: 'Auto', light: 'Light', dark: 'Dark' } satisfies Record<
+  ThemePref,
+  string
+>;
 const applyTheme = (pref: ThemePref) => {
   document.documentElement.style.colorScheme = pref === 'auto' ? 'light dark' : pref;
   qs('theme-toggle').innerHTML = `${themeIcons[pref]}<span>${themeLabels[pref]}</span>`;
@@ -2584,9 +2597,8 @@ const applyTheme = (pref: ThemePref) => {
     `Color theme: ${themeLabels[pref]}. Click to change.`,
   );
 };
-let themePref = themeOrder.includes(localStorage.getItem('cc-safety-net-theme') as ThemePref)
-  ? (localStorage.getItem('cc-safety-net-theme') as ThemePref)
-  : 'auto';
+let themePref =
+  themeOrder.find((pref) => pref === localStorage.getItem('cc-safety-net-theme')) ?? 'auto';
 applyTheme(themePref);
 qs('theme-toggle').onclick = () => {
   themePref = themeOrder[(themeOrder.indexOf(themePref) + 1) % themeOrder.length] ?? 'auto';

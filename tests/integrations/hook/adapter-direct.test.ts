@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { z } from 'zod';
 import { runAntigravityCliHook } from '@/integrations/antigravity-cli/hook';
 import { runClaudeCodeHook } from '@/integrations/claude-code/hook';
 import { runCopilotCliHook } from '@/integrations/copilot-cli/hook';
@@ -21,9 +22,18 @@ import {
   kimiShellInput,
 } from '../hook-helpers';
 
+type DirectHookValue =
+  | boolean
+  | number
+  | string
+  | null
+  | undefined
+  | readonly DirectHookValue[]
+  | { readonly [key: string]: DirectHookValue };
+type DirectHookInput = { readonly [key: string]: DirectHookValue };
 async function runWithInput(
   run: () => Promise<void>,
-  input: object | string,
+  input: DirectHookInput | string,
   env?: Record<string, string>,
 ) {
   const originalLog = console.log;
@@ -37,8 +47,9 @@ async function runWithInput(
   console.log = (...args: unknown[]) => output.push(args.map(String).join(' '));
   console.error = (...args: unknown[]) => errorOutput.push(args.map(String).join(' '));
   Object.assign(process.env, env);
+  const serialized = z.string().safeParse(input).data ?? JSON.stringify(input);
   Object.defineProperty(process, 'stdin', {
-    value: Readable.from([Buffer.from(typeof input === 'string' ? input : JSON.stringify(input))]),
+    value: Readable.from([Buffer.from(serialized)]),
     configurable: true,
   });
   try {
@@ -58,11 +69,11 @@ async function runWithInput(
   }
 }
 
-async function runHookJson(run: () => Promise<void>, input: object | string) {
+async function runHookJson(run: () => Promise<void>, input: DirectHookInput | string) {
   return JSON.parse((await runWithInput(run, input)).stdout);
 }
 
-async function expectAntigravityFailClosed(input: object): Promise<void> {
+async function expectAntigravityFailClosed(input: DirectHookInput): Promise<void> {
   const output = await runHookJson(runAntigravityCliHook, input);
 
   expect(output.decision).toBe('deny');

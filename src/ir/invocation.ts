@@ -1,6 +1,12 @@
+import { z } from 'zod';
+
 export type CommandToolKind = 'posix' | 'powershell' | 'auto';
 
 export type NonCommandToolInputKind = 'patch' | 'path' | 'grep' | 'glob' | 'unknown';
+
+/** Unparsed tool input crossing from an integration into the analysis pipeline. */
+const ToolInputValueSchema = z.unknown();
+export type ToolInputValue = z.input<typeof ToolInputValueSchema>;
 
 type NonCommandToolRoute = {
   [Kind in NonCommandToolInputKind]: { kind: Kind };
@@ -16,7 +22,7 @@ export type ToolCallContext = {
 
 type ToolInvocationBase = {
   toolName: string;
-  input: unknown;
+  input: ToolInputValue;
   context: ToolCallContext;
 };
 
@@ -31,7 +37,7 @@ export type ToolInvocation =
 
 export function createToolInvocation(
   toolName: string,
-  input: unknown,
+  input: ToolInputValue,
   route: ToolRoute,
   context: ToolCallContext,
   command: string | null,

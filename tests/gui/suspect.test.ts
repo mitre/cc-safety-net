@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { z } from 'zod';
 import { renderPolicyGuiHtml } from '@/gui/page';
 
 const html = renderPolicyGuiHtml('test-token');
@@ -8,7 +9,7 @@ const html = renderPolicyGuiHtml('test-token');
 const helperSource = [
   html.slice(
     html.indexOf('var commandSignature = (source) => {'),
-    html.indexOf('// src/integrations/catalog.ts'),
+    html.indexOf('// node_modules/zod/'),
   ),
   html.slice(
     html.indexOf('var findSuspects = (entries) => {'),
@@ -22,9 +23,9 @@ type FeedEntry = {
   sessionId?: string;
   failureStage?: string;
 };
-const findSuspects = new Function(`${helperSource}return findSuspects;`)() as (
-  entries: FeedEntry[],
-) => Set<FeedEntry>;
+const findSuspects = z
+  .function({ input: [z.array(z.custom<FeedEntry>())], output: z.set(z.custom<FeedEntry>()) })
+  .parse(new Function(`${helperSource}return findSuspects;`)());
 
 describe('suspect filter', () => {
   test('flags a fail-closed denial on its own', () => {

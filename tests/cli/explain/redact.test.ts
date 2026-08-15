@@ -7,7 +7,6 @@ import {
   formatTraceHuman,
   formatTraceJson,
 } from '@/cli/explain/index';
-import type { ExplainResult } from '@/ir/explain';
 import { policySnapshot } from '../../helpers/policy';
 import { getTraceSteps, withEnv } from '../../helpers.ts';
 import { explainTestCommand as explainCommand } from './test-helpers';
@@ -50,11 +49,9 @@ describe('explainCommand env wrapper redaction', () => {
     const json = formatTraceJson(result);
     const parsed = JSON.parse(json);
     const allSteps = getTraceSteps(parsed);
-    const stripStep = allSteps.find(
-      (s: { type: string }) => s.type === 'leading-tokens-stripped',
-    ) as { input: string[]; removed: string[] } | undefined;
+    const stripStep = allSteps.find((step) => step.type === 'leading-tokens-stripped');
     expect(stripStep).toBeDefined();
-    if (stripStep) {
+    if (stripStep?.type === 'leading-tokens-stripped') {
       expect(stripStep.input.join(' ')).not.toContain('topsecret');
       expect(stripStep.removed.join(' ')).not.toContain('topsecret');
       expect(stripStep.input.join(' ')).toContain('SECRET=<redacted>');
@@ -136,6 +133,13 @@ describe('secret redaction in shell wrappers and interpreters', () => {
       reason: 'xoxb-abcdefghijklmnopqrstuvwxyz',
       future: 'pypi-abcdefghijklmnopqrstuvwxyz',
     };
+    const customRuleMetadata = {
+      id: secrets.id,
+      rulebook: { name: secrets.name, version: secrets.version },
+      source: secrets.source,
+      override: { type: 'reason' as const, reason: secrets.reason },
+      future: secrets.future,
+    };
     const snapshot = policySnapshot({
       rules: [
         {
@@ -146,13 +150,7 @@ describe('secret redaction in shell wrappers and interpreters', () => {
         },
       ],
       ruleMetadata: {
-        [secrets.id]: {
-          id: secrets.id,
-          rulebook: { name: secrets.name, version: secrets.version },
-          source: secrets.source,
-          override: { type: 'reason' as const, reason: secrets.reason },
-          future: secrets.future,
-        } as NonNullable<ExplainResult['customRule']>,
+        [secrets.id]: customRuleMetadata,
       },
     });
 

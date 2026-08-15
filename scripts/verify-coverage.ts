@@ -34,7 +34,10 @@ export function parseCoverageSummary(lcov: string): CoverageSummary {
     if (match?.[1] && match[2] !== undefined) {
       if (!record) throw new Error('LCOV metric outside record');
       if (!/^\d+$/.test(match[2])) throw new Error(`Malformed LCOV ${match[1]} value`);
-      const key = match[1] as keyof typeof totals;
+      const key = match[1];
+      if (key !== 'LF' && key !== 'LH' && key !== 'FNF' && key !== 'FNH') {
+        throw new Error('Malformed LCOV record field');
+      }
       if (record.metrics[key] !== undefined) throw new Error(`Duplicate LCOV ${key} field`);
       const value = Number(match[2]);
       if (!Number.isSafeInteger(value)) throw new Error(`Malformed LCOV ${key} value`);

@@ -142,10 +142,15 @@ async function withUpdateTest(
       { CC_SAFETY_NET_AUDIT_HOME: home, CC_SAFETY_NET_NO_UPDATE_CHECK: undefined },
       async () => {
         const version = spyOn(systemInfo, 'getPackageVersion').mockReturnValue(currentVersion);
-        const fetch = spyOn(globalThis, 'fetch').mockImplementation((async () => {
-          if (latestVersion === null) throw new TypeError('fetch failed');
-          return new Response(JSON.stringify({ version: latestVersion }));
-        }) as unknown as typeof globalThis.fetch);
+        const fetch = spyOn(globalThis, 'fetch').mockImplementation(
+          Object.assign(
+            async () => {
+              if (latestVersion === null) throw new TypeError('fetch failed');
+              return new Response(JSON.stringify({ version: latestVersion }));
+            },
+            { preconnect: globalThis.fetch.preconnect },
+          ),
+        );
         await fn(home, () => fetch.mock.calls.length).finally(() => {
           fetch.mockRestore();
           version.mockRestore();

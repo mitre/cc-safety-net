@@ -54,13 +54,14 @@ function getConfigSourceInfo(
     validation = { errors: [error.message], ruleNames: new Set<string>() };
   }
 
-  return {
+  const info: ConfigSourceInfo = {
     path,
     exists: true,
     valid: validation.errors.length === 0,
     ruleCount: validation.ruleNames.size,
-    ...(validation.errors.length > 0 ? { errors: validation.errors } : {}),
   };
+  if (validation.errors.length > 0) info.errors = validation.errors;
+  return info;
 }
 
 function toEffectiveRule(rule: CustomRule, source: 'user' | 'project'): EffectiveRule {

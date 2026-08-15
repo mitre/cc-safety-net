@@ -137,12 +137,13 @@ describe('path canonicalization', () => {
   });
 });
 
-function capturePathLimit(run: () => unknown): PathCanonicalizationLimitError {
+function capturePathLimit(run: () => void): PathCanonicalizationLimitError {
   try {
     run();
   } catch (error) {
     expect(error).toBeInstanceOf(PathCanonicalizationLimitError);
-    return error as PathCanonicalizationLimitError;
+    if (error instanceof PathCanonicalizationLimitError) return error;
+    throw error;
   }
   throw new Error('Expected path canonicalization to exceed its work budget');
 }

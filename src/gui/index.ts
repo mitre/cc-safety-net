@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { Writable } from 'node:stream';
+import { z } from 'zod';
 import { parseCommandArgs } from '@/cli/args';
 import { getActivitySummary } from '@/cli/doctor/activity';
 import { checkForUpdates } from '@/cli/doctor/updates';
@@ -31,6 +30,7 @@ import {
   createPolicyPreview,
   DEFAULT_GUI_POLICY,
   DESTRUCTIVE_COMMAND_RULE_METADATA,
+  type JsonValue,
   normalizeGuiPolicy,
   normalizeSafety,
   previewUserPolicyForGui,
@@ -49,6 +49,12 @@ const REPO_URL = `https://github.com/${REPO}`;
 const STAR_TIMEOUT_MS = 10_000;
 const DEFAULT_ACTIVITY_DAYS = 7;
 type StarCountFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+const serverAddressSchema = z.object({ port: z.number() });
+const explainRequestSchema = z.object({ command: z.string(), policy: z.json().optional() });
+const integrationRequestSchema = z.object({
+  target: z.enum(INSTALL_TARGETS.map((entry) => entry.target)),
+});
+const starCountResponseSchema = z.object({ stargazers_count: z.number() });
 
 /** @internal */
 export interface StarContext {
@@ -153,7 +159,7 @@ export async function createPolicyGuiServer(
     });
   });
 
-  const address = server.address() as AddressInfo;
+  const address = serverAddressSchema.parse(server.address());
   const origin = `http://127.0.0.1:${address.port}`;
   return {
     origin,
@@ -216,17 +222,21 @@ async function handleRequest(
       sendJson(response, 400, { errors: [body.error] });
       return;
     }
-    const payload = body.value as { command?: unknown; policy?: unknown } | null;
-    if (payload === null || typeof payload.command !== 'string') {
+    const payload = explainRequestSchema.safeParse(body.value);
+    if (!payload.success) {
       sendJson(response, 400, { errors: ['command must be a string'] });
       return;
     }
-    const errors = getUserPolicyDiagnostics(payload.policy);
+    const errors = getUserPolicyDiagnostics(payload.data.policy);
     if (errors.length > 0) {
       sendJson(response, 400, { errors });
       return;
     }
-    sendJson(response, 200, explainDraftCommand(payload.command, payload.policy, options));
+    sendJson(
+      response,
+      200,
+      explainDraftCommand(payload.data.command, payload.data.policy ?? null, options),
+    );
     return;
   }
 
@@ -339,8 +349,8 @@ async function handleRequest(
       sendJson(response, 400, { errors: [body.error] });
       return;
     }
-    const target = (body.value as { target?: unknown } | null)?.target;
-    if (typeof target !== 'string' || !INSTALL_TARGETS.some((entry) => entry.target === target)) {
+    const payload = integrationRequestSchema.safeParse(body.value);
+    if (!payload.success) {
       sendJson(response, 400, { error: 'unknown target' });
       return;
     }
@@ -348,7 +358,7 @@ async function handleRequest(
     sendJson(
       response,
       200,
-      await (options.runIntegration ?? runIntegration)(action, target as InstallTarget),
+      await (options.runIntegration ?? runIntegration)(action, payload.data.target),
     );
     return;
   }
@@ -358,7 +368,7 @@ async function handleRequest(
 
 function explainDraftCommand(
   command: string,
-  policy: unknown,
+  policy: JsonValue,
   options: RulesPolicyOptions,
 ): ExplainResult {
   const draft = normalizeGuiPolicy(policy);
@@ -400,13 +410,16 @@ function requestHasValidToken(request: IncomingMessage, url: URL, token: string)
 
 async function readJsonBody(
   request: IncomingMessage,
-): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+): Promise<{ ok: true; value: JsonValue } | { ok: false; error: string }> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
-    chunks.push(chunk as Buffer);
+    chunks.push(Buffer.from(chunk));
   }
   try {
-    return { ok: true, value: JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}') };
+    return {
+      ok: true,
+      value: z.json().parse(JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')),
+    };
   } catch (error) {
     return {
       ok: false,
@@ -423,7 +436,7 @@ function sendHtml(response: ServerResponse, html: string): void {
   response.end(html);
 }
 
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
+function sendJson<Body>(response: ServerResponse, status: number, body: Body): void {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -583,22 +596,20 @@ export function runIntegration(
     const lines: string[] = [];
     const originalLog = console.log;
     const originalError = console.error;
+    const originalWrite = process.stdout.write;
     console.log = (...args: unknown[]) => lines.push(args.map(String).join(' '));
     console.error = console.log;
+    process.stdout.write = () => true;
     try {
       const exitCode = await runInstallCommand(action, [], {
         selectTargets: async () => [target],
-        output: new Writable({
-          write(_chunk, _encoding, callback) {
-            callback();
-          },
-        }) as unknown as NodeJS.WriteStream,
         ...overrides,
       });
       return { ok: exitCode === 0, output: lines.join('\n') };
     } finally {
       console.log = originalLog;
       console.error = originalError;
+      process.stdout.write = originalWrite;
     }
   };
   const result = integrationActionQueue.then(run);
@@ -667,8 +678,8 @@ async function fetchStarCount(fetchRepo: StarCountFetch = fetch): Promise<number
       signal: AbortSignal.timeout(STAR_TIMEOUT_MS),
     });
     if (!response.ok) return null;
-    const body = (await response.json()) as { stargazers_count?: unknown };
-    return typeof body.stargazers_count === 'number' ? body.stargazers_count : null;
+    const body = starCountResponseSchema.safeParse(await response.json());
+    return body.success ? body.data.stargazers_count : null;
   } catch {
     return null;
   }

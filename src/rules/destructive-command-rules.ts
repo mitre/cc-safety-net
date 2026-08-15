@@ -571,7 +571,7 @@ const DESTRUCTIVE_COMMAND_RULE_INTENTS = new Map(
   DESTRUCTIVE_COMMAND_RULE_METADATA.map((rule) => [rule.id, rule.intent]),
 );
 
-const CATASTROPHIC_DESTRUCTIVE_COMMAND_RULE_IDS = new Set(
+const CATASTROPHIC_DESTRUCTIVE_COMMAND_RULE_IDS = new Set<string>(
   DESTRUCTIVE_COMMAND_RULE_METADATA.filter((rule) => rule.catastrophic).map((rule) => rule.id),
 );
 
@@ -597,7 +597,7 @@ export function filterDestructiveCommandMatch(
     | undefined,
 ): DestructiveCommandRuleMatch | null {
   if (!match) return null;
-  if (CATASTROPHIC_DESTRUCTIVE_COMMAND_RULE_IDS.has(match.id as DestructiveCommandRuleId)) {
+  if (CATASTROPHIC_DESTRUCTIVE_COMMAND_RULE_IDS.has(match.id)) {
     return match;
   }
   if (policy?.destructiveCommandProtectionEnabled === false) return null;
@@ -640,13 +640,19 @@ export function resolveEffectiveDestructiveCommandRules(
           : undefined;
         const inheritedEnabled = capability?.enabled ?? true;
         const override = policy.destructiveCommandRuleOverrides[rule.id];
-        const state = rule.catastrophic
+        const state: {
+          enabled: boolean;
+          inheritedEnabled: boolean;
+          changesInherited: boolean;
+          source: EffectiveDestructiveCommandRuleState['source'];
+          activationCapability?: RuleActivationCapability;
+          override?: 'on' | 'off';
+        } = rule.catastrophic
           ? {
               enabled: true,
               inheritedEnabled: true,
               changesInherited: false,
               source: 'catastrophic' as const,
-              ...(override ? { override } : {}),
             }
           : policy.destructiveCommandProtectionEnabled
             ? override
@@ -655,9 +661,6 @@ export function resolveEffectiveDestructiveCommandRules(
                   inheritedEnabled,
                   changesInherited: (override === 'on') !== inheritedEnabled,
                   source: 'rule_override' as const,
-                  ...(rule.activationCapability
-                    ? { activationCapability: rule.activationCapability }
-                    : {}),
                   override,
                 }
               : {
@@ -665,20 +668,15 @@ export function resolveEffectiveDestructiveCommandRules(
                   inheritedEnabled,
                   changesInherited: false,
                   source: capability?.source ?? ('built_in_default' as const),
-                  ...(rule.activationCapability
-                    ? { activationCapability: rule.activationCapability }
-                    : {}),
                 }
             : {
                 enabled: false,
                 inheritedEnabled,
                 changesInherited: false,
                 source: 'master_disabled' as const,
-                ...(rule.activationCapability
-                  ? { activationCapability: rule.activationCapability }
-                  : {}),
-                ...(override ? { override } : {}),
               };
+        if (rule.activationCapability) state.activationCapability = rule.activationCapability;
+        if (override) state.override = override;
         return [rule.id, Object.freeze(state)];
       }),
     ),

@@ -3,6 +3,7 @@
  */
 
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
+import { z } from 'zod';
 import type { HookPlatform } from '@/integrations/doctor-types';
 
 type HookDetectionStatus = 'configured' | 'n/a' | 'disabled' | 'not-inspected';
@@ -30,6 +31,8 @@ export interface DetectContext {
   copilotCliVersion?: string | null;
 }
 
+export type StateFileValue = z.output<typeof z.json>;
+
 /**
  * Read a runtime's own state file. Missing is an answer ("not installed"); unparseable is not,
  * so the caller can report it as uninspected instead of guessing.
@@ -37,11 +40,12 @@ export interface DetectContext {
 export function readStateFile(
   path: string,
   preprocess: (raw: string) => string = (raw) => raw,
-): { kind: 'missing' } | { kind: 'unreadable' } | { kind: 'ok'; value: unknown } {
+): { kind: 'missing' } | { kind: 'unreadable' } | { kind: 'ok'; value: StateFileValue } {
   if (!existsSync(path)) return { kind: 'missing' };
 
   try {
-    return { kind: 'ok', value: JSON.parse(preprocess(readFileSync(path, 'utf-8'))) };
+    const parsed = z.json().safeParse(JSON.parse(preprocess(readFileSync(path, 'utf-8'))));
+    return parsed.success ? { kind: 'ok', value: parsed.data } : { kind: 'unreadable' };
   } catch {
     return { kind: 'unreadable' };
   }
@@ -75,10 +79,4 @@ export function inspectManagedPluginDir(
     configPath,
     errors: [`${configPath} is a symlink or not a directory; move or remove it before installing`],
   };
-}
-
-export function readRecord(value: unknown, key: string): unknown {
-  return typeof value === 'object' && value !== null
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
 }

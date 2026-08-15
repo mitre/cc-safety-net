@@ -33,7 +33,19 @@ function rulebook(input: Partial<Rulebook> = {}): Rulebook {
 
 describe('rulebook validation', () => {
   test('accepts a valid rulebook', () => {
-    expect(assertValidRulebook(rulebook()).name).toBe('project-rules');
+    expect(
+      assertValidRulebook({
+        ...rulebook(),
+        description: 'Project rules',
+        author: 'project',
+        extension: 'retained',
+      }),
+    ).toMatchObject({
+      name: 'project-rules',
+      description: 'Project rules',
+      author: 'project',
+      extension: 'retained',
+    });
   });
 
   test('accepts a rulebook with no fixtures', () => {

@@ -70,14 +70,15 @@ const paranoidOnlyCases: Array<{
 ];
 
 function options(strict: boolean, shell?: ShellKind): Omit<AnalyzeOptions, 'policySnapshot'> {
-  return {
+  const result: Omit<AnalyzeOptions, 'policySnapshot'> = {
     cwd: process.cwd(),
     strict,
     paranoidRm: false,
     paranoidInterpreters: false,
     worktreeMode: false,
-    ...(shell ? { shell } : {}),
   };
+  if (shell) result.shell = shell;
+  return result;
 }
 
 describe('strict-only unverifiable command checks', () => {
@@ -94,27 +95,28 @@ describe('strict-only unverifiable command checks', () => {
     });
 
     test(`blocks ${testCase.name} at the paranoid safety level`, () => {
-      expect(
-        analyzeTestCommand(testCase.command, {
-          cwd: process.cwd(),
-          config: { safety: { level: 'paranoid' } },
-          ...(testCase.shell ? { shell: testCase.shell } : {}),
-        }),
-      ).toMatchObject({ ruleId: testCase.ruleId, intent: testCase.intent });
+      const testOptions: Omit<AnalyzeOptions, 'policySnapshot'> & {
+        config: { safety: { level: 'paranoid' } };
+      } = {
+        cwd: process.cwd(),
+        config: { safety: { level: 'paranoid' } },
+      };
+      if (testCase.shell) testOptions.shell = testCase.shell;
+      expect(analyzeTestCommand(testCase.command, testOptions)).toMatchObject({
+        ruleId: testCase.ruleId,
+        intent: testCase.intent,
+      });
     });
   }
 
   for (const testCase of [...strictOnlyCases, ...paranoidOnlyCases]) {
     test(`force-enables ${testCase.name} under Standard`, () => {
-      expect(
-        analyzeTestCommand(testCase.command, {
-          ...options(false, testCase.shell),
-          config: { destructiveCommandRuleOverrides: { [testCase.ruleId]: 'on' } },
-        }),
-      ).toMatchObject({
-        ruleId: testCase.ruleId,
-        ...('intent' in testCase ? { intent: testCase.intent } : {}),
+      const result = analyzeTestCommand(testCase.command, {
+        ...options(false, testCase.shell),
+        config: { destructiveCommandRuleOverrides: { [testCase.ruleId]: 'on' } },
       });
+      expect(result).toMatchObject({ ruleId: testCase.ruleId });
+      if ('intent' in testCase) expect(result).toMatchObject({ intent: testCase.intent });
     });
   }
 

@@ -958,11 +958,11 @@ function bashToolCall(command: string) {
   };
 }
 
-function shellToolCall(input: Record<string, unknown>) {
+function shellToolCall(input: ToolCallInput) {
   return toolCall('Shell', input);
 }
 
-function toolCall(toolName: string, input: Record<string, unknown>) {
+function toolCall(toolName: string, input: ToolCallInput) {
   return {
     type: 'tool_call',
     toolCallId: 'pi-tool-call',
@@ -990,10 +990,13 @@ function piContext(cwd: string, options: Partial<Parameters<typeof handlePiToolC
   };
 }
 
-function writeUserPolicy(userConfigDir: string, policy: unknown): void {
+function writeUserPolicy(userConfigDir: string, policy: JsonValue): void {
   mkdirSync(dirname(userConfigDir), { recursive: true });
   writeFileSync(join(dirname(userConfigDir), 'policy.json'), JSON.stringify(policy), 'utf-8');
 }
+
+type ToolCallInput = Record<string, string | number | boolean | null | undefined>;
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 function createHandlerWithSecretProtectionDisabled(dir: string) {
   const userConfigDir = join(dir, 'home', '.cc-safety-net', 'rules');

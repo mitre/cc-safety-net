@@ -9,12 +9,12 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   type DetectContext,
   type HookDetection,
   inspectManagedPluginDir,
   lstatOrUndefined,
-  readRecord,
 } from '@/integrations/detect/context';
 import { stripJsonComments } from '@/integrations/jsonc';
 import {
@@ -33,6 +33,20 @@ import { getPackageVersion } from '@/integrations/system-info';
 
 const PLATFORM = 'openclaw';
 const ENABLE_HINT = `run \`openclaw plugins enable ${OPENCLAW_PLUGIN_ID}\``;
+const openClawManifestSchema = z.object({ id: z.string() });
+const openClawPackageSchema = z.object({
+  openclaw: z.object({ extensions: z.array(z.string()) }),
+});
+const openClawConfigSchema = z.object({
+  plugins: z
+    .object({
+      enabled: z.boolean().optional(),
+      allow: z.array(z.string()).optional(),
+      deny: z.array(z.string()).optional(),
+      entries: z.record(z.string(), z.object({ enabled: z.boolean().optional() })).optional(),
+    })
+    .optional(),
+});
 
 /** Read one file from the installed plugin, reporting why it cannot be trusted. */
 function readPluginFile(dir: string, name: string): { content: string } | { error: string } {
@@ -49,9 +63,9 @@ function readPluginFile(dir: string, name: string): { content: string } | { erro
   }
 }
 
-function parseJson(content: string): unknown {
+function parseJson(content: string) {
   try {
-    return JSON.parse(stripJsonComments(content));
+    return z.json().safeParse(JSON.parse(stripJsonComments(content))).data;
   } catch {
     return undefined;
   }
@@ -61,7 +75,8 @@ function parseJson(content: string): unknown {
 function manifestError(dir: string): string | undefined {
   const file = readPluginFile(dir, OPENCLAW_PLUGIN_MANIFEST_FILE);
   if ('error' in file) return file.error;
-  if (readRecord(parseJson(file.content), 'id') === OPENCLAW_PLUGIN_ID) return undefined;
+  if (openClawManifestSchema.safeParse(parseJson(file.content)).data?.id === OPENCLAW_PLUGIN_ID)
+    return undefined;
   return `${join(dir, OPENCLAW_PLUGIN_MANIFEST_FILE)} is not a valid ${OPENCLAW_PLUGIN_ID} manifest; run install --openclaw`;
 }
 
@@ -74,16 +89,10 @@ function packageError(dir: string): string | undefined {
   const file = readPluginFile(dir, OPENCLAW_PLUGIN_PACKAGE_FILE);
   if ('error' in file) return file.error;
 
-  const extensions = readRecord(readRecord(parseJson(file.content), 'openclaw'), 'extensions');
-  if (Array.isArray(extensions) && extensions.includes(`./${OPENCLAW_PLUGIN_ENTRY_FILE}`))
-    return undefined;
+  const extensions = openClawPackageSchema.safeParse(parseJson(file.content)).data?.openclaw
+    .extensions;
+  if (extensions?.includes(`./${OPENCLAW_PLUGIN_ENTRY_FILE}`)) return undefined;
   return `${join(dir, OPENCLAW_PLUGIN_PACKAGE_FILE)} does not point OpenClaw at ${OPENCLAW_PLUGIN_ENTRY_FILE}; run install --openclaw`;
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : [];
 }
 
 /** Why OpenClaw would not load the plugin, or `undefined` when it would. */
@@ -93,28 +102,24 @@ function enablementError(homeDir: string): string | undefined {
 
   const config = (() => {
     try {
-      return JSON.parse(stripJsonComments(readFileSync(configPath, 'utf-8')));
+      return openClawConfigSchema.parse(
+        JSON.parse(stripJsonComments(readFileSync(configPath, 'utf-8'))),
+      );
     } catch {
       return undefined;
     }
   })();
   if (config === undefined) return `Failed to read ${configPath}; fix it, then ${ENABLE_HINT}`;
 
-  const plugins = readRecord(config, 'plugins');
-  if (readRecord(plugins, 'enabled') === false)
+  const plugins = config.plugins;
+  if (plugins?.enabled === false)
     return `plugins.enabled is false in ${configPath}; no OpenClaw plugin loads`;
 
-  const entryEnabled = readRecord(
-    readRecord(readRecord(plugins, 'entries'), OPENCLAW_PLUGIN_ID),
-    'enabled',
-  );
-  if (
-    stringList(readRecord(plugins, 'deny')).includes(OPENCLAW_PLUGIN_ID) ||
-    entryEnabled === false
-  )
+  const entryEnabled = plugins?.entries?.[OPENCLAW_PLUGIN_ID]?.enabled;
+  if (plugins?.deny?.includes(OPENCLAW_PLUGIN_ID) || entryEnabled === false)
     return `${OPENCLAW_PLUGIN_ID} is disabled in ${configPath}; ${ENABLE_HINT}`;
 
-  const allow = stringList(readRecord(plugins, 'allow'));
+  const allow = plugins?.allow ?? [];
   if (allow.length > 0 && !allow.includes(OPENCLAW_PLUGIN_ID))
     return `plugins.allow in ${configPath} does not list ${OPENCLAW_PLUGIN_ID}; add it, then ${ENABLE_HINT}`;
   if (allow.includes(OPENCLAW_PLUGIN_ID) || entryEnabled === true) return undefined;
@@ -173,13 +178,13 @@ export function detect(context: DetectContext): HookDetection {
       : entry.content.startsWith(OPENCLAW_MANAGED_HEADER)
         ? undefined
         : `Unmanaged ${OPENCLAW_PLUGIN_ENTRY_FILE} occupies ${join(configPath, OPENCLAW_PLUGIN_ENTRY_FILE)}; move or remove it`;
-  const shapeErrors = [entryError, manifestError(configPath), packageError(configPath)].filter(
+  const artifactErrors = [entryError, manifestError(configPath), packageError(configPath)].filter(
     (error) => error !== undefined,
   );
   const installed = 'content' in entry ? artifactVersion(entry.content) : undefined;
   const errors =
-    shapeErrors.length > 0
-      ? shapeErrors
+    artifactErrors.length > 0
+      ? artifactErrors
       : modifiedFileErrors(configPath, installed, findOpenClawArtifactDir());
   if (errors.length > 0) return { platform: PLATFORM, status: 'n/a', configPath, errors };
 

@@ -1,5 +1,6 @@
 import { lstatSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { z } from 'zod';
 import { getAuditLogsDir } from '@/engine/facade';
 import type {
   DoctorPosture,
@@ -7,22 +8,27 @@ import type {
   ProtectedDirectoryPosture,
 } from '@/integrations/doctor-types';
 
+const posixProcessSchema = z.object({ getuid: z.function({ output: z.number() }) });
+const filesystemErrorSchema = z.object({ code: z.string().optional() });
+
 function inspectDirectory(kind: ProtectedDirectoryKind, path: string): ProtectedDirectoryPosture {
   try {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) return { kind, path, status: 'unsafe', issues: ['symlink'] };
     if (!stat.isDirectory()) return { kind, path, status: 'unsafe', issues: ['not-directory'] };
-    if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+    if (process.platform === 'win32') {
       return { kind, path, status: 'unknown', issues: [] };
     }
+    const posixProcess = posixProcessSchema.safeParse(process);
+    if (!posixProcess.success) return { kind, path, status: 'unknown', issues: [] };
 
     const issues = [
-      ...(stat.uid !== process.getuid() ? (['ownership'] as const) : []),
+      ...(stat.uid !== posixProcess.data.getuid() ? (['ownership'] as const) : []),
       ...((stat.mode & 0o022) !== 0 ? (['permissions'] as const) : []),
     ];
     return { kind, path, status: issues.length > 0 ? 'unsafe' : 'safe', issues };
   } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') {
+    if (filesystemErrorSchema.safeParse(error).data?.code === 'ENOENT') {
       return { kind, path, status: 'not-applicable', issues: [] };
     }
     return { kind, path, status: 'unknown', issues: [] };

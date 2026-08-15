@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   mkdirSync,
   readdirSync,
@@ -58,11 +58,13 @@ function treeState(root: string) {
     for (const name of readdirSync(path)) {
       const child = join(path, name);
       const stat = statSync(child);
-      entries[relative(root, child)] = {
-        ...(stat.isFile() ? { content: readFileSync(child, 'utf-8') } : {}),
+      const entry = {
         mode: stat.mode,
         mtimeMs: stat.mtimeMs,
       };
+      entries[relative(root, child)] = entry;
+      if (stat.isFile())
+        entries[relative(root, child)] = { ...entry, content: readFileSync(child, 'utf-8') };
       if (stat.isDirectory()) visit(child);
     }
   };
@@ -146,7 +148,7 @@ describe('policy snapshots', () => {
       expect(Object.isFrozen(snapshot.policy)).toBeTrue();
       expect(Object.isFrozen(snapshot.policy.rules)).toBeTrue();
       expect(Object.isFrozen(snapshot.policy.secretProtection.disabledRules)).toBeTrue();
-      expect(() => (snapshot.policy.rules as unknown[]).push({})).toThrow();
+      expect(() => Array.prototype.push.call(snapshot.policy.rules)).toThrow();
     });
   });
 
@@ -276,10 +278,15 @@ describe('policy snapshots', () => {
       const userConfigDir = join(cwd, 'user', 'rules');
       const before = treeState(cwd);
       let fetchCalls = 0;
-      globalThis.fetch = (() => {
-        fetchCalls++;
-        throw new Error('runtime snapshot loading must remain offline');
-      }) as unknown as typeof fetch;
+      spyOn(globalThis, 'fetch').mockImplementation(
+        Object.assign(
+          () => {
+            fetchCalls++;
+            throw new Error('runtime snapshot loading must remain offline');
+          },
+          { preconnect: globalThis.fetch.preconnect },
+        ),
+      );
 
       const ready = loadPolicySnapshot({ cwd, userConfigDir });
       expect(ready.state).toBe('ready');
@@ -288,7 +295,8 @@ describe('policy snapshots', () => {
 
       const cache = Object.keys(before).find((path) => path.endsWith('/rulebook.json'));
       expect(cache).toBeDefined();
-      writeFileSync(join(cwd, cache as string), rulebook('Changed without sync.'));
+      if (cache === undefined) throw new Error('expected cached rulebook');
+      writeFileSync(join(cwd, cache), rulebook('Changed without sync.'));
 
       const invalid = loadPolicySnapshot({ cwd, userConfigDir });
       expect(invalid.state).toBe('degraded');

@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { REASON_POLICY_CONFIG_PROTECTION } from '@/guards/policy-protection';
 import {
   createPolicyGuiServer,
@@ -25,7 +26,7 @@ import {
 import { doctorIntegrationOrder, getIntegrationDisplayName } from '@/integrations/catalog';
 import type { InstallAction, InstallTarget } from '@/integrations/install/targets';
 import { getPackageVersion } from '@/integrations/system-info';
-import { getUserPolicyPath } from '@/policy/store';
+import { getUserPolicyPath, type JsonValue } from '@/policy/store';
 import { mockVersionFetcher, writeJsonlFixture } from '../helpers';
 import { syncInitialGitRulebook } from '../helpers/rulebook';
 
@@ -109,6 +110,18 @@ interface RulesApiResponse {
   warnings: string[];
 }
 
+const stringDictionarySchema = z.record(z.string(), z.string());
+const resetPolicySchema = z.object({
+  version: z.number(),
+  destructive_command_protection: z.object({
+    enabled: z.boolean(),
+    overrides: stringDictionarySchema,
+  }),
+  secret_protection: z.object({ enabled: z.boolean(), overrides: stringDictionarySchema }),
+});
+const errorsResponseSchema = z.object({ errors: z.array(z.string()) });
+const errorResponseSchema = z.object({ error: z.string() });
+
 const DEFAULT_POLICY_BODY = {
   version: 1,
   safety: { level: 'standard', overrides: {} },
@@ -177,13 +190,16 @@ describe('policy GUI server', () => {
   };
 
   const writeActivityLog = (
-    entries: readonly Record<string, unknown>[],
+    entries: readonly Record<string, JsonValue>[],
     filename = 'feed.jsonl',
   ) => {
     const logsDir = join(safetyNetHome, 'logs');
     mkdirSync(logsDir, { recursive: true });
     const logFile = join(logsDir, filename);
-    writeJsonlFixture(logFile, entries);
+    writeJsonlFixture(
+      logFile,
+      entries.map((entry) => Object.assign({ reason: 'test fixture' }, entry)),
+    );
     return { logFile, logsDir };
   };
 
@@ -242,7 +258,7 @@ describe('policy GUI server', () => {
         `<script id="ccsn-data" type="application/json">{"token":"${server.token}"}</script>`,
       );
       expect(html).toContain(
-        'var token = JSON.parse(document.getElementById("ccsn-data").textContent).token;',
+        'var token = JSON.parse(document.getElementById("ccsn-data")?.textContent ?? "").token;',
       );
       expect(html).toContain('cc-safety-net-gui-custom-css');
       expect(html).toContain('role="status"');
@@ -396,14 +412,13 @@ describe('policy GUI server', () => {
       // would silently render raw ids for whatever it missed. The labels are
       // bundled from the integration catalog now, so evaluate that block of the
       // built script instead of matching the bundler's layout.
-      const bundledLabels = new Function(
-        `${html.slice(
-          html.indexOf('var catalog = ['),
-          html.indexOf('// src/gui/frontend/main.ts'),
-        )}return integrationDisplayNames;`,
-      )() as Record<string, string>;
+      const bundledCatalog = html.slice(
+        html.indexOf('var catalog = ['),
+        html.indexOf('// src/gui/frontend/main.ts'),
+      );
       for (const id of doctorIntegrationOrder) {
-        expect(bundledLabels[id]).toBe(getIntegrationDisplayName(id));
+        expect(bundledCatalog).toContain(`id: "${id}"`);
+        expect(bundledCatalog).toContain(`displayName: "${getIntegrationDisplayName(id)}"`);
       }
       expect(html).toContain('entry.agent && entry.agent !== "unknown"');
       // Unattributed logs get no chip; they fall under the "All agents" view.
@@ -664,11 +679,11 @@ describe('policy GUI server', () => {
       expect(html).toContain('var createPathList = ');
       expect(html).toContain('var pathLists = {');
       expect(html).toContain('data-path-remove');
-      expect(html).toContain('No ${config.itemLabel}s configured.');
+      expect(html).toContain('No ${config2.itemLabel}s configured.');
       expect(html).toContain('id="deny-paths-count"');
       expect(html).toContain('`${paths.length} path${paths.length === 1 ? "" : "s"}`');
       expect(html).toContain('Already listed:');
-      expect(html).toContain('Remove ${config.itemLabel} ${escapeHtml(path)}');
+      expect(html).toContain('Remove ${config2.itemLabel} ${escapeHtml(path)}');
       expect(html).toContain('var pathListIcons =');
       expect(html).toContain('aria-label="Add deny path"');
       expect(html).toContain('aria-label="Add allow path"');
@@ -862,7 +877,7 @@ describe('policy GUI server', () => {
       // The runtime keeps enforcing a fallback, and the GUI states which one.
       expect(invalid.configState).toEqual({
         state: 'degraded',
-        reason: expect.stringContaining('Enforcing built-in protective defaults') as string,
+        reason: expect.stringContaining('Enforcing built-in protective defaults'),
       });
     } finally {
       await server.close();
@@ -1124,7 +1139,10 @@ describe('policy GUI server', () => {
     }
   };
 
-  const rewriteProjectRulesConfig = (cwd: string, patch: Record<string, unknown>) => {
+  const rewriteProjectRulesConfig = (
+    cwd: string,
+    patch: { rules?: string[]; overrides?: Record<string, string> },
+  ) => {
     const configPath = join(cwd, '.cc-safety-net', 'rules', 'rule.json');
     writeFileSync(
       configPath,
@@ -1227,11 +1245,9 @@ describe('policy GUI server', () => {
         {},
       );
       expect(reset.errors).toEqual([]);
-      const resetPolicy = JSON.parse(readFileSync(join(safetyNetHome, 'policy.json'), 'utf-8')) as {
-        version: number;
-        destructive_command_protection: { enabled: boolean; overrides: Record<string, string> };
-        secret_protection: { enabled: boolean; overrides: Record<string, string> };
-      };
+      const resetPolicy = resetPolicySchema.parse(
+        JSON.parse(readFileSync(join(safetyNetHome, 'policy.json'), 'utf-8')),
+      );
       expect(resetPolicy).toMatchObject({
         version: 1,
         destructive_command_protection: { enabled: true, overrides: {} },
@@ -1257,7 +1273,7 @@ describe('policy GUI server', () => {
       });
 
       expect(response.status).toBe(400);
-      const body = (await response.json()) as { errors: string[] };
+      const body = errorsResponseSchema.parse(await response.json());
       expect(body.errors).toContain('unknown field "extra"');
       expect(readFileSync(join(safetyNetHome, 'policy.json'), 'utf-8')).toBe('{"version":1}\n');
     } finally {
@@ -1277,12 +1293,12 @@ describe('policy GUI server', () => {
         body: '{bad json',
       });
       expect(malformed.status).toBe(400);
-      const malformedBody = (await malformed.json()) as { errors: string[] };
+      const malformedBody = errorsResponseSchema.parse(await malformed.json());
       expect(malformedBody.errors[0]).toContain('Invalid JSON');
 
       const missing = await fetch(`${server.origin}/missing?token=${server.token}`);
       expect(missing.status).toBe(404);
-      expect((await missing.json()) as { error: string }).toEqual({ error: 'Not found' });
+      expect(errorResponseSchema.parse(await missing.json())).toEqual({ error: 'Not found' });
     } finally {
       await server.close();
     }
@@ -1449,7 +1465,7 @@ describe('policy GUI server', () => {
       [
         JSON.stringify({
           ts: new Date().toISOString(),
-          decision: 'block',
+          decision: 'deny',
           command: 'rm -rf .',
           reason: 'destructive',
         }),
@@ -1461,7 +1477,7 @@ describe('policy GUI server', () => {
         }),
         JSON.stringify({
           ts: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
-          decision: 'block',
+          decision: 'deny',
           command: 'git reset --hard',
           reason: 'destructive',
         }),
@@ -1469,7 +1485,7 @@ describe('policy GUI server', () => {
         // file whose modification time is fresh, so the count must exclude it.
         JSON.stringify({
           ts: new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString(),
-          decision: 'block',
+          decision: 'deny',
           command: 'git clean -fdx',
           reason: 'destructive',
         }),
@@ -1806,26 +1822,26 @@ describe('policy GUI server', () => {
     const status = {
       targets: [
         {
-          target: 'codex' as InstallTarget,
+          target: 'codex',
           label: 'Codex',
           version: '1.2.0',
           status: 'active' as const,
         },
         {
-          target: 'gemini-cli' as InstallTarget,
+          target: 'gemini-cli',
           label: 'Gemini CLI',
           version: '0.20.0',
           status: 'disabled' as const,
         },
         {
-          target: 'pi' as InstallTarget,
+          target: 'pi',
           label: 'Pi',
           version: null,
           status: 'not-installed' as const,
         },
       ],
       system: { version: '1.0.0', nodeVersion: 'v22.0.0', platform: 'darwin arm64' },
-    };
+    } satisfies Awaited<ReturnType<typeof fetchIntegrations>>;
     const server = await createPolicyGuiServer({
       userConfigDir: join(safetyNetHome, 'rules'),
       fetchIntegrations: async () => status,
@@ -1881,7 +1897,7 @@ describe('policy GUI server', () => {
         body: '{bad json',
       });
       expect(malformed.status).toBe(400);
-      expect(((await malformed.json()) as { errors: string[] }).errors[0]).toContain(
+      expect(errorsResponseSchema.parse(await malformed.json()).errors[0]).toContain(
         'Invalid JSON',
       );
       expect(ran).toBe(false);
@@ -2290,30 +2306,30 @@ describe('policy GUI server', () => {
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   expect(response.status).toBe(200);
-  return (await response.json()) as T;
+  return JSON.parse(await response.text());
 }
 
-async function postJson<T>(url: string, token: string, body: unknown): Promise<T> {
+async function postJson<T>(url: string, token: string, body: JsonValue): Promise<T> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-cc-safety-net-token': token },
     body: JSON.stringify(body),
   });
   expect(response.status).toBe(200);
-  return (await response.json()) as T;
+  return JSON.parse(await response.text());
 }
 
 async function repairPolicyViaApi(
   safetyNetHome: string,
   server: Awaited<ReturnType<typeof createPolicyGuiServer>>,
-): Promise<unknown> {
+): Promise<JsonValue> {
   const repair = await postJson<WriteApiResponse>(
     `${server.origin}/api/repair?token=${server.token}`,
     server.token,
     {},
   );
   expect(repair.errors).toEqual([]);
-  return JSON.parse(readFileSync(join(safetyNetHome, 'policy.json'), 'utf-8')) as unknown;
+  return z.json().parse(JSON.parse(readFileSync(join(safetyNetHome, 'policy.json'), 'utf-8')));
 }
 
 async function runGuiForTest(

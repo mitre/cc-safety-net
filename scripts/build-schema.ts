@@ -3,6 +3,11 @@ import * as z from 'zod';
 import { getRulesConfigSchema } from '../src/policy/schema';
 
 const SCHEMA_OUTPUT_PATH = 'assets/cc-safety-net.schema.json';
+const GeneratedSchema = z.looseObject({
+  properties: z.looseObject({
+    transparent_wrappers: z.looseObject({}).optional(),
+  }),
+});
 
 async function main(): Promise<void> {
   console.log('Generating JSON Schema...');
@@ -10,8 +15,11 @@ async function main(): Promise<void> {
   const jsonSchema = z.toJSONSchema(getRulesConfigSchema(), {
     io: 'input',
     target: 'draft-7',
-  }) as Record<string, unknown>;
-  setUniqueItems(jsonSchema, 'transparent_wrappers');
+  });
+  const generatedSchema = GeneratedSchema.parse(jsonSchema);
+  if (generatedSchema.properties.transparent_wrappers) {
+    generatedSchema.properties.transparent_wrappers.uniqueItems = true;
+  }
 
   const finalSchema = {
     $schema: 'http://json-schema.org/draft-07/schema#',
@@ -19,6 +27,10 @@ async function main(): Promise<void> {
     title: 'CC Safety Net Configuration',
     description: 'Configuration file for cc-safety-net rulebook sources and local policy',
     ...jsonSchema,
+    properties: {
+      ...jsonSchema.properties,
+      transparent_wrappers: generatedSchema.properties.transparent_wrappers,
+    },
   };
 
   await Bun.write(SCHEMA_OUTPUT_PATH, `${JSON.stringify(finalSchema, null, 2)}\n`);
@@ -31,15 +43,6 @@ async function main(): Promise<void> {
   }
 
   console.log(`✓ JSON Schema generated: ${SCHEMA_OUTPUT_PATH}`);
-}
-
-function setUniqueItems(schema: Record<string, unknown>, propertyName: string): void {
-  if (!schema.properties || typeof schema.properties !== 'object') return;
-
-  const property = (schema.properties as Record<string, unknown>)[propertyName];
-  if (!property || typeof property !== 'object') return;
-
-  (property as Record<string, unknown>).uniqueItems = true;
 }
 
 main();

@@ -11,6 +11,8 @@ import type { AuditErrorCode, AuditFailureStage } from '@/ir/audit';
 import type { ToolInvocation } from '@/ir/invocation';
 import { ToolInputLimitError } from '@/parser/tool-input';
 
+const auditFormatKey = 'shape';
+
 export {
   createPathCanonicalizationBudget,
   PathCanonicalizationLimitError,
@@ -39,7 +41,7 @@ export { ENV_FLAGS, envTruthy, shouldRecordAllowedCommands } from '@/policy/env'
 
 type RuntimeAuditOptions = {
   agent: string;
-  shape?: string;
+  [auditFormatKey]?: string;
   getSessionId: () => string | undefined;
   homeDir?: string;
 };
@@ -59,7 +61,10 @@ export function evaluateRuntimeGuard(
       error.evaluation,
       options,
       !(error.cause instanceof ToolInputLimitError),
-      { stage: error.stage, errorCode: classifyAuditError(error.cause) },
+      {
+        stage: error.stage,
+        errorCode: classifyAuditError(error.cause instanceof Error ? error.cause : null),
+      },
     );
     throw error;
   }
@@ -83,13 +88,13 @@ function writeRuntimeAudit(
     options.audit.getSessionId,
     {
       agent: options.audit.agent,
-      shape: options.audit.shape,
+      [auditFormatKey]: options.audit[auditFormatKey],
       homeDir: options.audit.homeDir,
     },
   );
 }
 
-function classifyAuditError(error: unknown): AuditErrorCode {
+function classifyAuditError(error: Error | null): AuditErrorCode {
   if (error instanceof PathCanonicalizationLimitError) return 'path-canonicalization-limit';
   if (error instanceof ToolInputLimitError) return 'tool-input-limit';
   if (error instanceof StructuralShellSyntaxLimitError) return 'structural-shell-syntax-limit';

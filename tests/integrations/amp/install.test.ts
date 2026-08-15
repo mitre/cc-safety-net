@@ -55,9 +55,11 @@ type StubOptions = {
   stageLeavesTreeClean?: boolean;
 };
 
+type StubState = { checkout?: string; staged?: string; dirty?: boolean };
+
 function makeAmpStub(options: StubOptions = {}) {
   const calls: string[] = [];
-  const state: { checkout?: string; staged?: string; dirty?: boolean } = {};
+  const state: StubState = {};
   const run: AmpRunner = (command, cwd) => {
     const line = command.join(' ');
     calls.push(line);

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { writeIntegrationDenialAudit } from '@/integrations/audit';
 import { resolveContainedCwd } from '@/integrations/cwd-containment';
 import {
@@ -18,10 +19,23 @@ import { getNonCommandToolInputKind } from '@/parser/tool-input';
 import { ENV_FLAGS, envTruthy, shouldRecordAllowedCommands } from '@/policy/env';
 import type { PolicySnapshotOptions } from '@/policy/snapshot';
 
+const piToolInputSchema = z.looseObject({});
+const piToolCallSchema = z.looseObject({});
+const piEventTypeSchema = z.string().optional();
+const piToolNameSchema = z.string().trim().min(1);
+const piCommandSchema = z.string().trim().min(1);
+const piWorkingDirectorySchema = z.string().trim().min(1).optional();
+const piCommandInputSchema = z.looseObject({ command: piCommandSchema });
+const piShellInputSchema = piCommandInputSchema.extend({
+  working_directory: piWorkingDirectorySchema,
+});
+
+type PiToolCallPayload = z.input<typeof piToolCallSchema>;
+
 type PiApi = {
   on: (
     event: 'tool_call',
-    handler: (event: unknown, ctx: PiToolCallContext) => PiToolCallResult,
+    handler: (event: PiToolCallPayload, ctx: PiToolCallContext) => PiToolCallResult,
   ) => void;
 };
 
@@ -33,12 +47,6 @@ type PiToolCallContext = {
 };
 
 type PiToolCallResult = { block: true; reason: string } | undefined;
-
-type PiToolCallEvent = {
-  type?: string;
-  toolName?: string;
-  input?: Record<string, unknown>;
-};
 
 type PiCommandToolAdapter = {
   commandField: string;
@@ -77,12 +85,12 @@ export function createPiToolCallHandler(
     guardDependencies?: Partial<GuardDependencies>;
     policyOptions?: PolicySnapshotOptions;
   } = {},
-): (event: unknown, ctx: PiToolCallContext) => PiToolCallResult {
+): (event: PiToolCallPayload, ctx: PiToolCallContext) => PiToolCallResult {
   return (event, ctx) => handlePiToolCallWithDependencies(event, ctx, options);
 }
 
 function handlePiToolCallWithDependencies(
-  event: unknown,
+  event: PiToolCallPayload,
   ctx: PiToolCallContext,
   options: {
     guardDependencies?: Partial<GuardDependencies>;
@@ -126,64 +134,61 @@ function handlePiToolCallWithDependencies(
 }
 
 function getPiToolCall(
-  event: unknown,
+  event: PiToolCallPayload,
   ctx: PiToolCallContext,
 ): MalformedPiToolCall | ToolInvocation | undefined {
-  if (!event || typeof event !== 'object') return undefined;
-  const toolCall = event as PiToolCallEvent;
-  if (toolCall.type !== undefined && toolCall.type !== 'tool_call') return undefined;
-  if (typeof toolCall.toolName !== 'string' || toolCall.toolName.trim() === '') {
-    return malformedPiToolCall(ctx);
+  const parsedToolCall = piToolCallSchema.safeParse(event);
+  if (!parsedToolCall.success) return undefined;
+  const toolCall = parsedToolCall.data;
+  const parsedType = piEventTypeSchema.safeParse(toolCall.type);
+  if (!parsedType.success || (parsedType.data !== undefined && parsedType.data !== 'tool_call')) {
+    return undefined;
   }
+  const parsedToolName = piToolNameSchema.safeParse(toolCall.toolName);
+  if (!parsedToolName.success) return malformedPiToolCall(ctx);
+  const toolName = parsedToolName.data;
 
-  const validContextCwd =
-    typeof ctx.cwd === 'string' && ctx.cwd.trim() !== ''
-      ? resolveContainedCwd('.', [ctx.cwd])
-      : undefined;
-  if (!validContextCwd) return malformedPiToolCall(ctx, toolCall.toolName);
+  const validContextCwd = ctx.cwd.trim() !== '' ? resolveContainedCwd('.', [ctx.cwd]) : undefined;
+  if (!validContextCwd) return malformedPiToolCall(ctx, toolName);
 
-  const adapter = PI_COMMAND_TOOL_ADAPTERS.get(toolCall.toolName);
-  if (!toolCall.input || typeof toolCall.input !== 'object') {
-    return adapter ? malformedPiToolCall(ctx, toolCall.toolName) : undefined;
+  const adapter = PI_COMMAND_TOOL_ADAPTERS.get(toolName);
+  const parsedToolInput = piToolInputSchema.safeParse(toolCall.input);
+  if (!parsedToolInput.success) {
+    return adapter ? malformedPiToolCall(ctx, toolName) : undefined;
   }
+  const toolInput = parsedToolInput.data;
 
   if (!adapter) {
     return createToolInvocation(
-      toolCall.toolName,
-      toolCall.input,
-      { kind: getNonCommandToolInputKind(toolCall.toolName) },
+      toolName,
+      toolInput,
+      { kind: getNonCommandToolInputKind(toolName) },
       { configCwd: ctx.cwd, executionCwd: ctx.cwd },
       null,
     );
   }
 
-  const command = toolCall.input[adapter.commandField];
-  if (typeof command !== 'string' || command.trim() === '') {
-    return malformedPiToolCall(ctx, toolCall.toolName);
+  const parsedCommand = piCommandInputSchema.safeParse(toolInput);
+  if (!parsedCommand.success) {
+    return malformedPiToolCall(ctx, toolName);
   }
+  const command = piCommandSchema.parse(parsedCommand.data.command);
 
-  const hasCwdInput =
-    adapter.cwdField !== undefined &&
-    Object.hasOwn(toolCall.input, adapter.cwdField) &&
-    toolCall.input[adapter.cwdField] !== undefined;
-  const cwdInput = adapter.cwdField && hasCwdInput ? toolCall.input[adapter.cwdField] : undefined;
-  if (hasCwdInput && (typeof cwdInput !== 'string' || cwdInput.trim() === '')) {
-    return malformedPiToolCall(ctx, toolCall.toolName, command);
+  const parsedInput = adapter.cwdField ? piShellInputSchema.safeParse(toolInput) : parsedCommand;
+  if (!parsedInput.success) {
+    return malformedPiToolCall(ctx, toolName, command);
   }
-  const executionCwd =
-    typeof cwdInput === 'string' ? resolveContainedCwd(cwdInput, [ctx.cwd]) : ctx.cwd;
+  const cwdInput = piWorkingDirectorySchema.safeParse(
+    'working_directory' in parsedInput.data ? parsedInput.data.working_directory : undefined,
+  ).data;
+  const executionCwd = cwdInput !== undefined ? resolveContainedCwd(cwdInput, [ctx.cwd]) : ctx.cwd;
   if (!executionCwd) {
-    return malformedPiToolCall(
-      ctx,
-      toolCall.toolName,
-      command,
-      typeof cwdInput === 'string' ? cwdInput : undefined,
-    );
+    return malformedPiToolCall(ctx, toolName, command, cwdInput);
   }
 
   return createToolInvocation(
-    toolCall.toolName,
-    toolCall.input,
+    toolName,
+    toolInput,
     { kind: 'command', shell: adapter.shell },
     { configCwd: ctx.cwd, executionCwd },
     command,
@@ -199,7 +204,7 @@ function malformedPiToolCall(
   return {
     malformed: true,
     denial: createFailedClosedDenial({ command, segment, toolName }),
-    cwd: typeof ctx.cwd === 'string' && ctx.cwd.trim() ? ctx.cwd : null,
+    cwd: ctx.cwd.trim() ? ctx.cwd : null,
   };
 }
 

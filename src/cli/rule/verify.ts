@@ -1,4 +1,5 @@
 import { dirname, join, resolve } from 'node:path';
+import { z } from 'zod';
 import { colors } from '@/cli/utils/colors';
 import {
   getLegacyProjectConfigPath,
@@ -34,6 +35,7 @@ const VERIFY_SEPARATOR = '═'.repeat(VERIFY_HEADER.length);
 const RULES_SCHEMA_URL =
   'https://raw.githubusercontent.com/kenryu42/cc-safety-net/main/assets/cc-safety-net.schema.json';
 const RULES_DIR_RESERVED_ENTRIES = new Set(['rule.json', 'rule.lock', 'cache']);
+const rulesConfigWithSchemaField = z.object({ $schema: z.unknown().optional() }).loose();
 
 type RulesConfigSchemaKind = 'rules' | 'legacy';
 
@@ -293,7 +295,7 @@ function validateGitHubSourceRules(target: PolicyFilesystemTarget): ValidationRe
     try {
       let parsed: unknown;
       try {
-        parsed = JSON.parse(content) as unknown;
+        parsed = JSON.parse(content);
       } catch {
         errors.push(`${entry.name}/rulebook.json: invalid JSON`);
         continue;
@@ -408,7 +410,7 @@ function addRulesSchemaIfMissing(target: PolicyFilesystemTarget): boolean {
   try {
     const content = readPolicyFile(target);
     if (content === null) return false;
-    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const parsed = rulesConfigWithSchemaField.parse(JSON.parse(content));
     if (parsed.$schema) return false;
 
     writePolicyFileAtomic(

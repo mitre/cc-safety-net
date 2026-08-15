@@ -397,7 +397,9 @@ describe('configuration recovery', () => {
   });
 
   test('states that the dropped sources are inert and everything else still applies', async () => {
-    await withBrokenFixture(DROPPED_SOURCE_ROWS[2]?.[1] as FailureRow, (fixture) => {
+    const row = DROPPED_SOURCE_ROWS[2]?.[1];
+    if (!row) throw new Error('Expected dropped source fixture');
+    await withBrokenFixture(row, (fixture) => {
       const snapshot = loadPolicySnapshot({
         cwd: fixture.cwd,
         userConfigDir: fixture.userConfigDir,

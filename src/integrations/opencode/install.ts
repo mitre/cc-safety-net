@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { atomicWriteFile } from '@/integrations/install/atomic-write';
 import {
   findMatchingBracket,
@@ -12,6 +13,18 @@ import { stripJsonComments } from '@/integrations/jsonc';
 const OPENCODE_PACKAGE = 'cc-safety-net';
 const OPENCODE_CACHE_PACKAGE = `${OPENCODE_PACKAGE}@latest`;
 const OPENCODE_CONFIG_FILES = ['opencode.json', 'opencode.jsonc'] as const;
+const jsonStringSchema = z.string();
+const openCodeConfigSchema = z
+  .object({ plugin: z.array(z.json()).optional() })
+  .loose()
+  .transform((config) => ({
+    hasManagedPlugin:
+      config.plugin?.some((plugin) => {
+        const parsed = jsonStringSchema.safeParse(plugin);
+        return parsed.success && parsed.data.includes(OPENCODE_PACKAGE);
+      }) ?? false,
+  }))
+  .or(z.json().transform(() => ({ hasManagedPlugin: false })));
 
 function getDefaultOpenCodeConfigPath(homeDir: string) {
   return join(homeDir, '.config', 'opencode', OPENCODE_CONFIG_FILES[0]);
@@ -85,7 +98,7 @@ function findJsonStringEnd(content: string, index: number) {
 }
 
 function readJsonString(content: string, start: number, end: number) {
-  return JSON.parse(content.slice(start, end)) as unknown;
+  return jsonStringSchema.parse(JSON.parse(content.slice(start, end)));
 }
 
 function findJsonArrayClose(content: string, openIndex: number) {
@@ -142,7 +155,7 @@ function findManagedPluginItems(content: string, pluginArray: TextRange) {
     if (content[index] === '"') {
       const end = findJsonStringEnd(content, index);
       const value = readJsonString(content, index, end);
-      if (typeof value === 'string' && value.includes(OPENCODE_PACKAGE)) {
+      if (value.includes(OPENCODE_PACKAGE)) {
         ranges.push({ start: index, end });
       }
       index = end;
@@ -157,20 +170,13 @@ function findManagedPluginItems(content: string, pluginArray: TextRange) {
 
 function parseOpenCodeConfig(content: string, configPath: string) {
   try {
-    return JSON.parse(stripJsonComments(content)) as unknown;
+    return openCodeConfigSchema.parse(JSON.parse(stripJsonComments(content)));
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`Failed to parse OpenCode config ${configPath}: ${error.message}`);
     }
     throw error;
   }
-}
-
-function hasManagedPlugin(config: unknown) {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return false;
-  const plugins = (config as { plugin?: unknown }).plugin;
-  if (!Array.isArray(plugins)) return false;
-  return plugins.some((plugin) => typeof plugin === 'string' && plugin.includes(OPENCODE_PACKAGE));
 }
 
 function removeManagedPlugins(content: string, configPath: string) {
@@ -197,7 +203,7 @@ export function uninstallOpenCode(homeDir: string): InstallResult {
 
     try {
       const content = readFileSync(configPath, 'utf-8');
-      if (!hasManagedPlugin(parseOpenCodeConfig(content, configPath))) continue;
+      if (!parseOpenCodeConfig(content, configPath).hasManagedPlugin) continue;
 
       atomicWriteFile(configPath, removeManagedPlugins(content, configPath));
       return { path: configPath, alreadyInstalled: true };

@@ -14,8 +14,8 @@ import { hasUnclosedQuotes } from '@/parser/shell/shared';
 const LEGACY_BOUNDARIES = new Set(['&&', '||', '|&', '|', '&', ';']);
 const LEGACY_SEGMENT_REDIRECTS = new Set(['<<', '<<<', '>|']);
 const SPECIAL_VARIABLE_NAME = /[*@#?$!_-]/;
-const EMPTY_ENTRIES = Object.freeze([]) as readonly ShellSyntaxEntry[];
-const EMPTY_STRINGS = Object.freeze([]) as readonly string[];
+const EMPTY_ENTRIES = Object.freeze<ShellSyntaxEntry[]>([]);
+const EMPTY_STRINGS = Object.freeze<string[]>([]);
 // A call site inlines the whole body, so branching recursion (`a() { a; a; }`) grows
 // exponentially where the depth cap alone never triggers. Real commands call a handful of
 // functions; anything past this budget fails closed instead of running the projection dry.
@@ -39,6 +39,10 @@ type ProjectionContext = {
 type QuoteState = { single: boolean; double: boolean };
 
 type PositionedEntries = { readonly start: number; readonly entries: readonly ShellSyntaxEntry[] };
+
+type WordTextRun =
+  | { readonly kind: 'text'; readonly text: string; readonly glob: boolean }
+  | { readonly kind: 'operator'; readonly operator: string };
 
 /**
  * Projects the parsed program onto the flat entry stream the path scanners read.
@@ -182,19 +186,20 @@ function projectRedirection(
     : [];
   const first = targetEntries[0];
   const target = first?.kind === 'word' ? first.text : undefined;
+  const entry = Object.freeze({
+    kind: 'redirection' as const,
+    operator,
+    role: getRedirectionRole(operator),
+    targetOrder: LEGACY_SEGMENT_REDIRECTS.has(operator)
+      ? ('legacy-segment' as const)
+      : ('immediate' as const),
+  });
+  const projectedEntry = target === undefined ? entry : Object.freeze({ ...entry, target });
   return [
     // An explicit fd prefix (`2>&1`) is a word of its own in the entry stream, as the scanners
     // have always seen it; folding it into the redirection would silently drop that token.
     ...(redirection.fd === undefined ? [] : [wordEntry(String(redirection.fd))]),
-    Object.freeze({
-      kind: 'redirection' as const,
-      operator,
-      role: getRedirectionRole(operator),
-      targetOrder: LEGACY_SEGMENT_REDIRECTS.has(operator)
-        ? ('legacy-segment' as const)
-        : ('immediate' as const),
-      ...(target === undefined ? {} : { target }),
-    }),
+    projectedEntry,
     ...(target === undefined ? targetEntries : targetEntries.slice(1)),
   ];
 }
@@ -315,9 +320,9 @@ function projectWord(
   for (const part of word.parts) {
     if (part.provenance !== 'command-substitution' && part.provenance !== 'arithmetic') {
       for (const run of scanWordText(part.raw, state, context.flags)) {
-        if (typeof run === 'string') {
+        if (run.kind === 'operator') {
           flush();
-          entries.push(operatorEntry(run));
+          entries.push(operatorEntry(run.operator));
           continue;
         }
         pending += run.text;
@@ -330,7 +335,7 @@ function projectWord(
     if (state.double) {
       const quotedText = context.source.slice(part.span.start, part.span.end);
       pending += scanWordText(quotedText, { single: false, double: true }, context.flags)
-        .map((run) => (typeof run === 'string' ? run : run.text))
+        .map((run) => (run.kind === 'operator' ? run.operator : run.text))
         .join('');
       continue;
     }
@@ -380,19 +385,15 @@ function projectWord(
 // expose their fallback, and an unquoted `*`/`?` makes the whole word a glob whose text never
 // reaches a segment. An unquoted parenthesis ends the run it sits in, so `open('.env')` still
 // yields `.env` as a token of its own.
-function scanWordText(
-  raw: string,
-  state: QuoteState,
-  flags: ProjectionFlags,
-): ({ text: string; glob: boolean } | string)[] {
-  const runs: ({ text: string; glob: boolean } | string)[] = [];
+function scanWordText(raw: string, state: QuoteState, flags: ProjectionFlags): WordTextRun[] {
+  const runs: WordTextRun[] = [];
   let text = '';
   let glob = false;
   let index = 0;
   while (index < raw.length) {
     const char = raw[index] ?? '';
     if (!state.single && !state.double && (char === '(' || char === ')')) {
-      runs.push({ text, glob }, char);
+      runs.push({ kind: 'text', text, glob }, { kind: 'operator', operator: char });
       text = '';
       glob = false;
       index++;
@@ -449,7 +450,7 @@ function scanWordText(
     text += char;
     index++;
   }
-  return [...runs, { text, glob }];
+  return [...runs, { kind: 'text', text, glob }];
 }
 
 function readExpansion(raw: string, start: number, state: QuoteState, flags: ProjectionFlags) {
@@ -484,7 +485,7 @@ function collectAssignmentFallback(
   if (!operator) return;
   const runs = scanWordText(suffix.slice(operator.length), { ...state }, flags);
   flags.assignmentFallbacks.push(
-    ...runs.flatMap((run) => (typeof run === 'string' || !run.text ? [] : [run.text])),
+    ...runs.flatMap((run) => (run.kind === 'operator' || !run.text ? [] : [run.text])),
   );
 }
 

@@ -21,14 +21,21 @@ interface GitConfigEntriesResolution {
   entries: GitConfigEntry[];
 }
 
-const REASON_GIT_ALIAS_CONFIG =
-  'Git aliases supplied through command-line or environment config can hide or execute commands. Run git without Git alias overrides, or ask the user to run it manually.';
-
-export function splitAtDoubleDash(tokens: readonly string[]): {
+interface GitTokenSplit {
   index: number;
   before: readonly string[];
   after: readonly string[];
-} {
+}
+
+interface GitSubcommand {
+  subcommand: string | null;
+  rest: string[];
+}
+
+const REASON_GIT_ALIAS_CONFIG =
+  'Git aliases supplied through command-line or environment config can hide or execute commands. Run git without Git alias overrides, or ask the user to run it manually.';
+
+export function splitAtDoubleDash(tokens: readonly string[]): GitTokenSplit {
   const index = tokens.indexOf('--');
   if (index === -1) {
     return { index: -1, before: tokens, after: [] };
@@ -83,10 +90,7 @@ export function hasGitCommandLineSshCommandConfig(
   );
 }
 
-export function extractGitSubcommandAndRest(tokens: readonly string[]): {
-  subcommand: string | null;
-  rest: string[];
-} {
+export function extractGitSubcommandAndRest(tokens: readonly string[]): GitSubcommand {
   if (tokens.length === 0) {
     return { subcommand: null, rest: [] };
   }

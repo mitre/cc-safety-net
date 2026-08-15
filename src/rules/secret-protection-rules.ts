@@ -464,13 +464,19 @@ export const SECRET_PROTECTION_RULE_METADATA = [
   ...SECRET_EXTENSION_RULES,
   ...SECRET_EXTENSION_PATTERN_RULES,
   ...SECRET_CODING_CLI_RULES,
-].map((rule) => ({
-  id: rule.id,
-  category: rule.category,
-  label: rule.label,
-  ...(rule.category === SECRET_CODING_CLI_CONFIG_CATEGORY ? { defaultOff: true } : {}),
-  ...('paths' in rule ? { paths: rule.paths } : { description: rule.description }),
-}));
+].map((rule) => {
+  const location = 'paths' in rule ? { paths: rule.paths } : { description: rule.description };
+  if (rule.category === SECRET_CODING_CLI_CONFIG_CATEGORY) {
+    return {
+      id: rule.id,
+      category: rule.category,
+      label: rule.label,
+      defaultOff: true,
+      ...location,
+    };
+  }
+  return { id: rule.id, category: rule.category, label: rule.label, ...location };
+});
 
 // Mixed settings and MCP config files carry credentials inline, but agents edit them as
 // routine work, so this tier ships off and the user opts in.

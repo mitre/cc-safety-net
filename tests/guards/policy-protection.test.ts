@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, parse, relative } from 'node:path';
 import { findPolicyConfigMutationTargetInToolInput as findPolicyMutationWithRoute } from '@/guards/policy-protection';
 import type { ToolRoute } from '@/ir/invocation';
-import { getNonCommandToolInputKind, normalizeToolName } from '@/parser/tool-input';
+import {
+  getNonCommandToolInputKind,
+  normalizeToolName,
+  type ToolInputValue,
+} from '@/parser/tool-input';
 import { getUserPolicyPath } from '@/policy/store';
 import {
   getProjectRulesConfigPath,
@@ -22,7 +26,7 @@ const COMMAND_TOOL_NAMES = new Set([
   'shell',
 ]);
 
-function findPolicyMutation(toolName: string, input: unknown, cwd = process.cwd()) {
+function findPolicyMutation(toolName: string, input: ToolInputValue, cwd = process.cwd()) {
   const route: ToolRoute = COMMAND_TOOL_NAMES.has(normalizeToolName(toolName))
     ? { kind: 'command', shell: 'auto' }
     : { kind: getNonCommandToolInputKind(toolName) };

@@ -116,7 +116,7 @@ export function loadTestPolicy(
   options: Omit<PolicySnapshotOptions, 'cwd'> = {},
 ): TestPolicyInput {
   const snapshot = loadPolicySnapshot({ ...options, cwd });
-  return {
+  const policy: TestPolicyInput = {
     rules: snapshot.policy.rules.map((rule) => ({
       ...rule,
       block_args: [...rule.block_args],
@@ -132,14 +132,13 @@ export function loadTestPolicy(
       disabledRules: new Set(snapshot.policy.secretProtection.disabledRules),
       denyPaths: [...snapshot.policy.secretProtection.denyPaths],
     },
-    ...(snapshot.state === 'degraded' ? { configFallbackReason: snapshot.reason } : {}),
   };
+  if (snapshot.state === 'degraded') policy.configFallbackReason = snapshot.reason;
+  return policy;
 }
 
 export function testExplainOptions(options: TestExplainOptions = {}): ExplainOptions {
   const { config, ...explainOptions } = options;
-  return {
-    ...explainOptions,
-    ...(config ? { policySnapshot: policySnapshot(config) } : {}),
-  };
+  if (!config) return explainOptions;
+  return { ...explainOptions, policySnapshot: policySnapshot(config) };
 }

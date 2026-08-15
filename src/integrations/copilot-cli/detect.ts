@@ -4,11 +4,11 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { COPILOT_PLUGIN_DIR, COPILOT_PLUGIN_ID } from '@/integrations/copilot-cli/plugin-id';
 import {
   type DetectContext,
   type HookDetection,
-  readRecord,
   readStateFile,
 } from '@/integrations/detect/context';
 import { stripJsonComments } from '@/integrations/jsonc';
@@ -36,6 +36,27 @@ interface CopilotDetectionState {
   activeConfigPaths: string[];
   disabledBy?: string;
 }
+
+const copilotHookConfigSchema = z.object({
+  disableAllHooks: z.boolean().optional(),
+  hooks: z
+    .object({
+      preToolUse: z
+        .array(
+          z.object({
+            type: z.string().optional(),
+            bash: z.string().optional(),
+            powershell: z.string().optional(),
+            command: z.string().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+const copilotPluginSettingsSchema = z.object({
+  enabledPlugins: z.record(z.string(), z.boolean()),
+});
 
 function _isSafetyNetCopilotCommand(command: string | undefined): boolean {
   if (!command?.includes('cc-safety-net')) return false;
@@ -91,7 +112,9 @@ function _readCopilotConfigFile(
   errors?: string[],
 ): CopilotHookConfig | undefined {
   try {
-    return JSON.parse(stripJsonComments(readFileSync(configPath, 'utf-8'))) as CopilotHookConfig;
+    return copilotHookConfigSchema.parse(
+      JSON.parse(stripJsonComments(readFileSync(configPath, 'utf-8'))),
+    );
   } catch (e) {
     errors?.push(`Failed to parse ${configPath}: ${e instanceof Error ? e.message : String(e)}`);
     return undefined;
@@ -305,7 +328,9 @@ export function detect(context: DetectContext): HookDetection {
   if (
     pluginInstalled &&
     settings.kind === 'ok' &&
-    readRecord(readRecord(settings.value, 'enabledPlugins'), COPILOT_PLUGIN_ID) === false
+    copilotPluginSettingsSchema.safeParse(settings.value).data?.enabledPlugins[
+      COPILOT_PLUGIN_ID
+    ] === false
   ) {
     return {
       platform: 'copilot-cli',

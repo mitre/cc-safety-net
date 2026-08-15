@@ -1,6 +1,8 @@
+import { z } from 'zod';
 import { getRulesConfigSchema, getRulesConfigValidation } from '@/policy/schema';
 import {
   bindDelegatedPolicyFilesystemTarget,
+  isPolicyFilesystemTarget,
   PolicyFilesystemError,
   type PolicyFilesystemTarget,
   readPolicyFile,
@@ -8,14 +10,21 @@ import {
 } from './filesystem';
 import { DEFAULT_CONFIG, type RulesConfig, type SyncRulesConfigResult } from './types';
 
-export function validateRulesConfig(config: unknown): { errors: string[]; sources: Set<string> } {
+type RulesConfigInput = Parameters<typeof getRulesConfigValidation>[0];
+
+interface RulesConfigReadResult {
+  config: RulesConfig | null;
+  errors: string[];
+}
+
+export function validateRulesConfig(config: RulesConfigInput): {
+  errors: string[];
+  sources: Set<string>;
+} {
   return getRulesConfigValidation(config);
 }
 
-export function readRulesConfig(path: string | PolicyFilesystemTarget): {
-  config: RulesConfig | null;
-  errors: string[];
-} {
+export function readRulesConfig(path: string | PolicyFilesystemTarget): RulesConfigReadResult {
   try {
     const content = readPolicyFile(toTarget(path));
     if (content === null) return { config: null, errors: [] };
@@ -23,7 +32,7 @@ export function readRulesConfig(path: string | PolicyFilesystemTarget): {
       return { config: null, errors: ['Config file is empty'] };
     }
 
-    const parsed = JSON.parse(content) as unknown;
+    const parsed = z.json().parse(JSON.parse(content));
     const validation = validateRulesConfig(parsed);
     if (validation.errors.length > 0) {
       return { config: null, errors: validation.errors };
@@ -108,9 +117,9 @@ export function createAtomicTempPath(path: string): string {
   return `${path}.${randomBytes(8).toString('hex')}.tmp`;
 }
 
-export function writeJsonAtomic(
+export function writeJsonAtomic<Value extends object>(
   path: string | PolicyFilesystemTarget,
-  value: unknown,
+  value: Value,
   mode?: number,
   afterRename?: (path: string) => void,
 ): void {
@@ -118,7 +127,8 @@ export function writeJsonAtomic(
 }
 
 function toTarget(path: string | PolicyFilesystemTarget): PolicyFilesystemTarget {
-  return typeof path === 'string' ? bindDelegatedPolicyFilesystemTarget(path) : path;
+  if (isPolicyFilesystemTarget(path)) return path;
+  return bindDelegatedPolicyFilesystemTarget(path);
 }
 
 import { randomBytes } from 'node:crypto';

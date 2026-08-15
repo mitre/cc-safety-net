@@ -13,13 +13,14 @@ type MeasuredAnalyzeOptions = AnalyzeInput & {
 
 function measure(command: string) {
   const scanWork = { units: 0 };
-  const result = analyzeCommand(command, {
+  const options = {
     policySnapshot: policySnapshot(),
     environment: TEST_ENVIRONMENT,
     effectiveCapabilities: testModes().capabilities,
     protectedGitMetadata: null,
     scanWork,
-  } as MeasuredAnalyzeOptions);
+  } satisfies MeasuredAnalyzeOptions;
+  const result = analyzeCommand(command, options);
   return { result, units: scanWork.units };
 }
 

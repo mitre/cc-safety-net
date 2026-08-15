@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 import type { CustomRule } from '@/ir/policy';
-import { validateConfig } from '@/rules/config';
+import { parseLegacyRulesConfig } from '@/rules/config';
 import { readRulesConfig, type SyncRulesConfigOptions, syncRulesConfig } from '@/rules/policy';
 import { writeJsonAtomic } from '@/rules/policy/config-file';
 import {
@@ -18,6 +19,7 @@ import {
   getScopePaths,
   getUserRulesConfigPath,
 } from '@/rules/policy/paths';
+import type { RulesConfig } from '@/rules/policy/types';
 
 const PROJECT_MIGRATED_FROM = '.safety-net.json';
 const USER_MIGRATED_FROM = '~/.cc-safety-net/config.json';
@@ -36,12 +38,12 @@ interface MigrateRulesScopeOptions {
   syncOptions: SyncRulesConfigOptions;
 }
 
-interface LegacyRulesConfig {
-  version: 1;
-  rules: CustomRule[];
-}
-
 type FileSnapshot = { target: PolicyFilesystemTarget; content: string | null };
+const migratedRulebookSchema = z.object({
+  migrated_from: z.string(),
+  rules: z.array(z.custom<CustomRule>()),
+});
+const migratedFromSchema = z.object({ migrated_from: z.string() });
 
 export async function runRulesMigrate(options: RulesMigrateOptions): Promise<number> {
   const results = [
@@ -153,7 +155,7 @@ async function writeAndSyncMigratedRulebook(
   rulebookName: string,
   rules: CustomRule[],
   configRules: string[],
-  overrides: Record<string, unknown>,
+  overrides: RulesConfig['overrides'],
   transparentWrappers: string[],
 ): Promise<{ ok: boolean; errors: string[] }> {
   try {
@@ -170,20 +172,9 @@ async function writeAndSyncMigratedRulebook(
   }
 }
 
-function readLegacyRulesConfig(
-  content: string,
-): { ok: true; config: LegacyRulesConfig } | { ok: false; errors: string[] } {
+function readLegacyRulesConfig(content: string): ReturnType<typeof parseLegacyRulesConfig> {
   try {
-    const parsed = JSON.parse(content) as unknown;
-    const validation = validateConfig(parsed);
-    if (validation.errors.length > 0) return { ok: false, errors: validation.errors };
-    return {
-      ok: true,
-      config: {
-        version: 1,
-        rules: ((parsed as Record<string, unknown>).rules as CustomRule[] | undefined) ?? [],
-      },
-    };
+    return parseLegacyRulesConfig(JSON.parse(content));
   } catch {
     return {
       ok: false,
@@ -258,7 +249,7 @@ function isCleanupVerified(
   try {
     const content = readPolicyFile(rulebookTarget);
     if (content === null) return false;
-    const rulebook = JSON.parse(content) as Record<string, unknown>;
+    const rulebook = migratedRulebookSchema.parse(JSON.parse(content));
     return (
       rulebook.migrated_from === migratedFrom &&
       JSON.stringify(rulebook.rules) === JSON.stringify(legacyRules)
@@ -286,8 +277,8 @@ function getMigratedFrom(target: PolicyFilesystemTarget): string | null {
   const content = readPolicyFile(target);
   if (content === null) return null;
   try {
-    const rulebook = JSON.parse(content) as Record<string, unknown>;
-    return typeof rulebook.migrated_from === 'string' ? rulebook.migrated_from : null;
+    const rulebook = migratedFromSchema.safeParse(JSON.parse(content));
+    return rulebook.success ? rulebook.data.migrated_from : null;
   } catch {
     return null;
   }

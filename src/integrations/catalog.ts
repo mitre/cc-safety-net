@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 type RuntimeMetadata = {
   order: number;
   displayName?: string;
@@ -247,9 +249,11 @@ export const installIntegrationMetadata = catalog
 
 /** Audit entries stamp an integration id as their `agent`, so this doubles as
  *  the id-to-label map for anything rendering a logged agent. */
-export const integrationDisplayNames = Object.fromEntries(
-  catalog.map((integration) => [integration.id, integration.displayName]),
-) as Record<IntegrationId, string>;
+export const integrationDisplayNames = z
+  .record(z.string(), z.string())
+  .parse(
+    Object.fromEntries(catalog.map((integration) => [integration.id, integration.displayName])),
+  );
 
 export function getIntegrationDisplayName(id: IntegrationId): string {
   return catalog.find((integration) => integration.id === id)?.displayName ?? id;

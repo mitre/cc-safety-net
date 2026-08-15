@@ -1,4 +1,5 @@
 import * as readline from 'node:readline';
+import type { Readable } from 'node:stream';
 import {
   type LolcatAnimationOptions,
   type LolcatOutput,
@@ -9,9 +10,15 @@ type InstallBannerOptions = Pick<
   LolcatAnimationOptions,
   'duration' | 'frequency' | 'seed' | 'sleep' | 'speed' | 'spread'
 > & {
-  input?: NodeJS.ReadStream;
+  input?: InstallBannerInput;
   onInterrupt?: () => void;
   output?: LolcatOutput;
+};
+
+type InstallBannerInput = Readable & {
+  readonly isTTY?: boolean;
+  isRaw?: boolean;
+  setRawMode(mode: boolean): void;
 };
 
 type KeyPress = {
@@ -43,7 +50,7 @@ export async function printInstallBanner(options: InstallBannerOptions = {}) {
     speed: options.speed,
     spread: options.spread,
   };
-  if (!input.isTTY || typeof input.setRawMode !== 'function') {
+  if (!input.isTTY) {
     await writeAnimatedLolcat(INSTALL_ASCII_ART, animationOptions);
     return;
   }

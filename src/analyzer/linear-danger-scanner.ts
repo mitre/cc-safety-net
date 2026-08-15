@@ -544,13 +544,20 @@ function hasGitShortOption(
     excludedShortStarts: string;
   },
 ): boolean {
-  const contexts = [
+  const contexts: Array<{
+    outerActive: boolean;
+    shortActive: boolean;
+    hasShortFlag: boolean;
+    depth: number;
+    quote: string;
+    escaped: boolean;
+  }> = [
     {
       outerActive: false,
       shortActive: false,
       hasShortFlag: false,
       depth: 0,
-      quote: '' as string,
+      quote: '',
       escaped: false,
     },
   ];

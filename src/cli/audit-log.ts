@@ -360,8 +360,8 @@ function formatLogEntry(entry: AuditLogEntry, timeZone?: string): string {
 function formatLogEntryDetail(entry: AuditLogEntry, timeZone?: string): string {
   const value = (input: string | null | undefined): string =>
     renderTerminalText(input === undefined || input === null || input === '' ? '-' : input);
-  const agent = entry.shape
-    ? `${entry.agent ?? '-'} (shape: ${entry.shape})`
+  const agent = entry['shape']
+    ? `${entry.agent ?? '-'} (shape: ${entry['shape']})`
     : (entry.agent ?? '-');
   return [
     `id:        ${value(entry.id)}`,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { getAntigravityHooksPath } from '@/integrations/antigravity/hook';
 import {
   installAntigravityCli,
@@ -10,13 +11,22 @@ import { makeTempHome } from '../hook-helpers';
 import { writeAntigravityConfig } from '../install/install-test-helpers';
 
 const ANTIGRAVITY_HOOK_COMMAND = 'npx -y cc-safety-net hook --agy-cli';
+const antigravityConfigSchema = z.record(z.string(), z.json());
+const managedDefinitionSchema = z.object({
+  enabled: z.json().optional(),
+  PreToolUse: z.json().optional(),
+});
 
 function readAntigravityConfig(configPath: string) {
-  return JSON.parse(readFileSync(configPath, 'utf-8'));
+  return antigravityConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')));
 }
 
-function countManagedHooks(config: unknown) {
+function countManagedHooks(config: z.infer<typeof antigravityConfigSchema>) {
   return JSON.stringify(config).match(/cc-safety-net hook --agy-cli/g)?.length ?? 0;
+}
+
+function managedDefinition(config: z.infer<typeof antigravityConfigSchema>) {
+  return managedDefinitionSchema.parse(config['cc-safety-net']);
 }
 
 function installAndReadAntigravityConfig(homeDir: string, configPath: string) {
@@ -55,7 +65,7 @@ describe('installAntigravityCli', () => {
       const { config, result } = installAndReadAntigravityConfig(homeDir, configPath);
 
       expect(result).toEqual({ path: configPath, alreadyInstalled: false });
-      expect(config['cc-safety-net'].enabled).toBe(true);
+      expect(managedDefinition(config).enabled).toBe(true);
       expect(countManagedHooks(config)).toBe(1);
       expect(JSON.stringify(config)).toContain(command);
     } finally {
@@ -110,7 +120,7 @@ describe('installAntigravityCli', () => {
 
       expect(result).toEqual({ path: configPath, alreadyInstalled: false });
       expect(countManagedHooks(config)).toBe(1);
-      expect(Array.isArray(config['cc-safety-net'].PreToolUse)).toBe(true);
+      expect(Array.isArray(managedDefinition(config).PreToolUse)).toBe(true);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }
@@ -174,7 +184,7 @@ describe('uninstallAntigravityCli', () => {
 
     try {
       const result = uninstallAntigravityCli(homeDir);
-      const entries = readAntigravityConfig(configPath)['cc-safety-net'].PreToolUse;
+      const entries = managedDefinition(readAntigravityConfig(configPath)).PreToolUse;
 
       expect(result).toEqual({ path: configPath, alreadyInstalled: true });
       expect(entries).toEqual([

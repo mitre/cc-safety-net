@@ -191,11 +191,10 @@ export function getRulebookCacheOptions(
   configDir: string,
   options: RulesPolicyOptions,
 ): SyncRulesConfigOptions {
-  const syncOptions = options as SyncRulesConfigOptions;
   return {
     cacheConfigDir: configDir,
     cwd: options.cwd,
-    global: syncOptions.global,
+    global: 'global' in options && options.global === true ? true : undefined,
   };
 }
 
@@ -214,14 +213,13 @@ function getRulebookCacheSlug(entry: RulebookLockEntry): string {
 
 function getRulesCacheDir(options?: RulesPolicyOptions): string {
   const configDir = options?.cacheConfigDir ?? getUserRulesDir(options);
-  const syncOptions = options as SyncRulesConfigOptions | undefined;
   if (
-    syncOptions &&
-    !syncOptions.global &&
-    syncOptions.cwd &&
-    resolve(configDir) === resolve(syncOptions.cwd)
+    options &&
+    !('global' in options && options.global) &&
+    options.cwd &&
+    resolve(configDir) === resolve(options.cwd)
   ) {
-    return join(resolve(syncOptions.cwd), SAFETY_NET_DIR, CACHE_SUBDIR);
+    return join(resolve(options.cwd), SAFETY_NET_DIR, CACHE_SUBDIR);
   }
   return join(dirname(configDir), CACHE_SUBDIR);
 }

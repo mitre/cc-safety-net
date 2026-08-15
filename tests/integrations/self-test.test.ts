@@ -6,7 +6,7 @@ describe('integration self-test', () => {
   test('uses the canonical fixed cases and ignores ambient safety modes', () => {
     const names = Object.values(ENV_FLAGS)
       .flatMap((flag) => [flag.name, 'legacyName' in flag ? flag.legacyName : undefined])
-      .filter((name) => name !== undefined) as string[];
+      .filter((name) => name !== undefined);
     const previous = new Map(names.map((name) => [name, process.env[name]]));
     for (const name of names) process.env[name] = 'true';
     process.env[ENV_FLAGS.level.name] = 'invalid-ambient-level';

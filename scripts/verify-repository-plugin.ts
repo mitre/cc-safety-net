@@ -1,6 +1,25 @@
 #!/usr/bin/env bun
 
 import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { z } from 'zod';
+
+const versionManifestSchema = z.object({ version: z.string() });
+const claudeHooksSchema = z.object({
+  hooks: z.object({
+    PreToolUse: z.array(z.object({ hooks: z.array(z.object({ command: z.string() })) })),
+  }),
+});
+const kimiManifestSchema = z.object({
+  version: z.string(),
+  hooks: z.array(
+    z.object({
+      event: z.string(),
+      matcher: z.string(),
+      command: z.string(),
+      timeout: z.number(),
+    }),
+  ),
+});
 
 function run(command: string[]) {
   const result = Bun.spawnSync(command, { stdout: 'pipe', stderr: 'pipe' });
@@ -9,22 +28,17 @@ function run(command: string[]) {
 }
 
 export function verifyRepositoryPlugin(): void {
-  const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string };
-  const plugin = JSON.parse(readFileSync('.claude-plugin/plugin.json', 'utf8')) as {
-    version: string;
-  };
+  const pkg = versionManifestSchema.parse(JSON.parse(readFileSync('package.json', 'utf8')));
+  const plugin = versionManifestSchema.parse(
+    JSON.parse(readFileSync('.claude-plugin/plugin.json', 'utf8')),
+  );
   if (pkg.version !== plugin.version) throw new Error('Package and plugin versions disagree');
-  const hooks = JSON.parse(readFileSync('hooks/hooks.json', 'utf8')) as {
-    hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> };
-  };
+  const hooks = claudeHooksSchema.parse(JSON.parse(readFileSync('hooks/hooks.json', 'utf8')));
   const command = hooks.hooks.PreToolUse[0]?.hooks[0]?.command;
   if (command !== 'node "${CLAUDE_PLUGIN_ROOT}/dist/bin/cc-safety-net.js" hook --coding-cli') {
     throw new Error('Claude plugin hook target drifted');
   }
-  const kimi = JSON.parse(readFileSync('kimi.plugin.json', 'utf8')) as {
-    version: string;
-    hooks: Array<{ event: string; matcher: string; command: string; timeout: number }>;
-  };
+  const kimi = kimiManifestSchema.parse(JSON.parse(readFileSync('kimi.plugin.json', 'utf8')));
   if (pkg.version !== kimi.version) throw new Error('Package and Kimi plugin versions disagree');
   const kimiHook = kimi.hooks[0];
   if (

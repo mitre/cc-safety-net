@@ -4,14 +4,18 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   type DetectContext,
   type HookDetection,
-  readRecord,
   readStateFile,
 } from '@/integrations/detect/context';
 
 const GEMINI_SAFETY_NET_EXTENSION = 'gemini-safety-net';
+const geminiEnablementSchema = z.record(
+  z.string(),
+  z.object({ overrides: z.array(z.string()).optional() }),
+);
 
 /**
  * Detect the Gemini extension from its installed directory and the enablement file Gemini CLI
@@ -28,11 +32,10 @@ export function detectGeminiCLI(homeDir: string): HookDetection {
 
   const overrides =
     enablement.kind === 'ok'
-      ? readRecord(readRecord(enablement.value, GEMINI_SAFETY_NET_EXTENSION), 'overrides')
+      ? geminiEnablementSchema.safeParse(enablement.value).data?.[GEMINI_SAFETY_NET_EXTENSION]
+          ?.overrides
       : undefined;
-  const disabled =
-    Array.isArray(overrides) &&
-    overrides.some((entry) => typeof entry === 'string' && entry.startsWith('!'));
+  const disabled = overrides?.some((entry) => entry.startsWith('!')) ?? false;
 
   if (disabled) {
     return {

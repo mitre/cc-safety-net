@@ -20,7 +20,7 @@ import { createProcessEnvironment } from '@/ir/environment';
 import { createToolInvocation, type ToolCallContext, type ToolRoute } from '@/ir/invocation';
 import type { SemanticFacts, ShellSyntaxFacts } from '@/ir/semantic-facts';
 import { getBasename } from '@/parser/shell';
-import { isReadOnlyTool } from '@/parser/tool-input';
+import { isReadOnlyTool, type ToolInputValue } from '@/parser/tool-input';
 import { getUserPolicyPath } from '@/policy/store';
 
 export const REASON_POLICY_CONFIG_PROTECTION =
@@ -56,7 +56,7 @@ type PolicyPathIdentity = {
 /** @internal */
 export function findPolicyConfigMutationTargetInToolInput(
   toolName: string,
-  input: unknown,
+  input: ToolInputValue,
   route: ToolRoute,
   context: ToolCallContext,
 ): PolicyConfigTarget | null {

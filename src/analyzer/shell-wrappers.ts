@@ -1,14 +1,19 @@
 import { getBasename } from '@/parser/shell/command';
 
-const SHELL_SHORT_VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+const SHELL_SHORT_VALUE_OPTIONS = {
   bash: ['O', 'o'],
   dash: ['o'],
   ksh: ['o'],
   sh: ['o'],
   zsh: ['o'],
-};
+} satisfies Readonly<Record<string, readonly string[]>>;
+type ShellWithShortValueOptions = keyof typeof SHELL_SHORT_VALUE_OPTIONS;
 const BASH_LONG_VALUE_OPTIONS = new Set(['--init-file', '--rcfile']);
 const BASH_STARTUP_OPTIONS = ['--init-file', '--rcfile'] as const;
+
+function hasShortValueOptions(shell: string): shell is ShellWithShortValueOptions {
+  return Object.hasOwn(SHELL_SHORT_VALUE_OPTIONS, shell);
+}
 
 /** @internal */
 export type ShellStartupEnvironmentName = 'BASH_ENV' | 'ENV';
@@ -95,10 +100,20 @@ export function extractShellStartupLoaderMetadata(
   };
 }
 
-function parseShellStartupArgv(
-  tokens: readonly string[],
-  shell: string,
-): { argvSource: ShellStartupArgvSource | null; interactive: boolean } {
+interface ShellStartupArgv {
+  argvSource: ShellStartupArgvSource | null;
+  interactive: boolean;
+}
+
+interface ShellShortOptions {
+  interactive: boolean;
+  followingValues: number;
+  commandSelected: boolean;
+  stdinMode: boolean;
+  syntaxCheck: boolean;
+}
+
+function parseShellStartupArgv(tokens: readonly string[], shell: string): ShellStartupArgv {
   const parsed = parseShellArgv(tokens);
   const boundary = parsed.commandIndex ?? parsed.scriptIndex ?? tokens.length;
   const sources: ShellStartupArgvSource[] = [];
@@ -149,13 +164,7 @@ function scanShellShortOptions(
   token: string,
   nextToken: string | undefined,
   mode: 'startup' | 'argv',
-): {
-  interactive: boolean;
-  followingValues: number;
-  commandSelected: boolean;
-  stdinMode: boolean;
-  syntaxCheck: boolean;
-} {
+): ShellShortOptions {
   let interactive = false;
   let followingValues = 0;
   let commandSelected = false;
@@ -189,7 +198,8 @@ function scanShellShortOptions(
     if (mode === 'argv' && token[0] === '-' && option === 'c') commandSelected = true;
     if (mode === 'argv' && option === 'n') syntaxCheck = token[0] === '-';
     if (mode === 'argv' && option === 's') stdinMode = token[0] === '-';
-    if (!SHELL_SHORT_VALUE_OPTIONS[shell]?.includes(option)) continue;
+    if (!hasShortValueOptions(shell) || !SHELL_SHORT_VALUE_OPTIONS[shell].includes(option))
+      continue;
     if (optionIndex + 1 === token.length) followingValues++;
     break;
   }

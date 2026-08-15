@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { writeIntegrationDenialAudit } from '@/integrations/audit';
 import {
   createFailedClosedDenial,
@@ -22,32 +23,70 @@ import {
 import type { CommandToolKind, ToolCallContext, ToolRoute } from '@/ir/invocation';
 import { createToolInvocation } from '@/ir/invocation';
 
+type HookValue = string | number | boolean | null | HookValue[] | { [key: string]: HookValue };
+
+const hookValueSchema: z.ZodType<HookValue> = z.json();
+const hookObjectSchema = z.looseObject({});
+const hookStringSchema = z.string();
+const hookChunkSchema = z.union([
+  z.string().transform((chunk) => Buffer.from(chunk, 'utf-8')),
+  z.instanceof(Uint8Array).transform((chunk) => Buffer.from(chunk)),
+]);
+const hookMetadataSchema = z.looseObject({
+  cwd: z.string().optional(),
+  tool_input: hookValueSchema.optional(),
+  toolCall: z
+    .looseObject({
+      args: hookValueSchema.optional(),
+    })
+    .optional(),
+});
+const hookAuditMetadataSchema = z.looseObject({
+  cwd: z.string().optional(),
+  toolCall: z
+    .looseObject({
+      args: z
+        .looseObject({
+          Cwd: z.string().optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
 type HookDenyOutput = (denial: IntegrationDenial) => void;
 
-type HookAdapter<T> = {
+type HookAdapter<T, ToolName, ToolInput> = {
   agent: string;
   getAgent?: (input: T) => string;
   outputDeny: HookDenyOutput;
   outputAllow?: () => void;
   guardDependencies?: Partial<GuardDependencies>;
   isSupported: (input: T) => boolean;
-  getToolName: (input: T) => unknown;
-  getToolInput: (input: T, toolName: string, outputDeny: HookDenyOutput) => ToolInputResult;
+  getToolName: (input: T) => ToolName;
+  getToolInput: (
+    input: T,
+    toolName: string,
+    outputDeny: HookDenyOutput,
+  ) => ToolInputResult<ToolInput>;
   getContext: (
     input: T,
-    toolInput: unknown,
+    toolInput: ToolInput,
     toolName: string,
     outputDeny: HookDenyOutput,
   ) => ToolCallContext | null;
   getSessionId: (input: T) => string | undefined;
 };
 
-type ConfiguredHookAdapter<T> = Omit<HookAdapter<T>, 'outputDeny' | 'outputAllow'> & {
+type ConfiguredHookAdapter<T, ToolName, ToolInput> = Omit<
+  HookAdapter<T, ToolName, ToolInput>,
+  'outputDeny' | 'outputAllow'
+> & {
   createDenyOutput: (message: string) => object;
   createAllowOutput?: () => object;
 };
 
-type ToolInputResult = { ok: true; input: unknown; route: ToolRoute } | { ok: false };
+type ToolInputResult<T> = { ok: true; input: T; route: ToolRoute } | { ok: false };
 
 /** @internal Maximum raw stdin accepted from hook hosts before fail-closed denial (8 MiB). */
 export const HOOK_INPUT_MAX_BYTES = 8 * 1024 * 1024;
@@ -77,19 +116,19 @@ async function readHookInput<T>(outputDeny: HookDenyOutput): Promise<T | undefin
 }
 
 /** Reads hook input without buffering more than HOOK_INPUT_MAX_BYTES raw bytes. */
-export async function readBoundedHookInput(
+export async function readBoundedHookInput<
+  DestroyResult = z.input<z.ZodUnknown>,
+  CancelResult = z.input<z.ZodUnknown>,
+>(
   input: (AsyncIterable<Buffer | Uint8Array | string> | Iterable<Buffer | Uint8Array | string>) & {
-    destroy?: () => unknown;
-    cancel?: () => unknown;
+    destroy?: () => DestroyResult;
+    cancel?: () => CancelResult;
   },
 ): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of input) {
-    const buffer =
-      typeof chunk === 'string'
-        ? Buffer.from(chunk, 'utf-8')
-        : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    const buffer = hookChunkSchema.parse(chunk);
     bytes += buffer.byteLength;
     if (bytes > HOOK_INPUT_MAX_BYTES) {
       stopHookInput(input);
@@ -100,11 +139,16 @@ export async function readBoundedHookInput(
   return Buffer.concat(chunks, bytes).toString('utf-8');
 }
 
-function stopHookInput(input: { destroy?: () => unknown; cancel?: () => unknown }): void {
-  const stop = input.destroy ?? input.cancel;
-  if (!stop) return;
+function stopHookInput<DestroyResult, CancelResult>(input: {
+  destroy?: () => DestroyResult;
+  cancel?: () => CancelResult;
+}): void {
   try {
-    Promise.resolve(stop.call(input)).catch(() => {});
+    if (input.destroy) {
+      Promise.resolve(input.destroy()).catch(() => {});
+      return;
+    }
+    if (input.cancel) Promise.resolve(input.cancel()).catch(() => {});
   } catch {}
 }
 
@@ -114,7 +158,7 @@ export function parseHookJson<T>(
   strictReason: string,
 ): T | undefined {
   try {
-    return JSON.parse(inputText) as T;
+    return JSON.parse(inputText);
   } catch {
     outputDeny({ reason: strictReason });
     return undefined;
@@ -129,26 +173,32 @@ export function getToolRoute(
   return shell ? { kind: 'command', shell } : { kind: getNonCommandToolInputKind(toolName) };
 }
 
-export function resolveStandardHookContext(
-  cwdInput: unknown,
-  toolInput: unknown,
+export function resolveStandardHookContext<CwdInput, ToolInput>(
+  cwdInput: CwdInput,
+  toolInput: ToolInput,
   toolName: string,
   outputDeny: HookDenyOutput,
 ): ToolCallContext | null {
   const requestedCwd = cwdInput === undefined ? process.cwd() : cwdInput;
+  const parsedCwd = hookStringSchema.safeParse(requestedCwd);
   const cwd =
-    typeof requestedCwd === 'string' && requestedCwd.trim() !== ''
-      ? firstTrustedRoot([requestedCwd])
+    parsedCwd.success && parsedCwd.data.trim() !== ''
+      ? firstTrustedRoot([parsedCwd.data])
       : undefined;
   if (cwd) return { configCwd: cwd, executionCwd: cwd };
 
-  outputFailedClosed(outputDeny, toolInput, toolName, stringField(requestedCwd));
+  outputFailedClosed(
+    outputDeny,
+    toolInput,
+    toolName,
+    parsedCwd.success ? parsedCwd.data : undefined,
+  );
   return null;
 }
 
-export function outputFailedClosed(
+export function outputFailedClosed<ToolInput>(
   outputDeny: HookDenyOutput,
-  toolInput?: unknown,
+  toolInput?: ToolInput,
   toolName?: string,
   segment?: string,
 ): void {
@@ -167,12 +217,14 @@ export function outputFailedClosed(
   );
 }
 
-async function runHookAdapter<T>(adapter: HookAdapter<T>): Promise<void> {
+async function runHookAdapter<T, ToolName, ToolInput>(
+  adapter: HookAdapter<T, ToolName, ToolInput>,
+): Promise<void> {
   const input = await readHookInput<T>(adapter.outputDeny);
   if (input === undefined) {
     return;
   }
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+  if (!hookObjectSchema.safeParse(input).success) {
     outputFailedClosed(adapter.outputDeny);
     return;
   }
@@ -182,13 +234,13 @@ async function runHookAdapter<T>(adapter: HookAdapter<T>): Promise<void> {
   }
 
   const agent = adapter.getAgent?.(input) ?? adapter.agent;
-  const shape = adapter.agent === agent ? undefined : adapter.agent;
+  const adapterKind = adapter.agent === agent ? undefined : adapter.agent;
   const auditCwd = getHookAuditCwd(input);
 
   const outputPreflightDeny = (denial: IntegrationDenial, toolName?: string): void => {
     writeIntegrationDenialAudit(denial, () => adapter.getSessionId(input), {
       agent,
-      shape,
+      ['shape']: adapterKind,
       toolName,
       cwd: auditCwd,
     });
@@ -196,15 +248,16 @@ async function runHookAdapter<T>(adapter: HookAdapter<T>): Promise<void> {
   };
 
   const toolNameInput = adapter.getToolName(input);
-  if (typeof toolNameInput !== 'string' || toolNameInput.trim() === '') {
+  const parsedToolName = hookStringSchema.safeParse(toolNameInput);
+  if (!parsedToolName.success || parsedToolName.data.trim() === '') {
     outputFailedClosed((denial) => outputPreflightDeny(denial), getRawHookToolInput(input));
     return;
   }
-  const toolName = toolNameInput;
+  const toolName = parsedToolName.data;
   const outputToolPreflightDeny = (denial: IntegrationDenial): void =>
     outputPreflightDeny(denial, toolName);
 
-  let toolInputResult: ToolInputResult;
+  let toolInputResult: ToolInputResult<ToolInput>;
   try {
     toolInputResult = adapter.getToolInput(input, toolName, outputToolPreflightDeny);
   } catch (error) {
@@ -243,7 +296,11 @@ async function runHookAdapter<T>(adapter: HookAdapter<T>): Promise<void> {
         auditAllowed: shouldRecordAllowedCommands(),
         dependencies: adapter.guardDependencies,
       },
-      audit: { agent, shape, getSessionId: () => adapter.getSessionId(input) },
+      audit: {
+        agent,
+        ['shape']: adapterKind,
+        getSessionId: () => adapter.getSessionId(input),
+      },
     });
     const denial = projectGuardDenial(evaluation, {
       includeEvidence: true,
@@ -282,40 +339,29 @@ function getHookGuardErrorLabel(stage: GuardStage): string {
   return 'hook analysis failed';
 }
 
-function stringField(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
+function getRawHookToolInput<T>(input: T): HookValue | undefined {
+  const metadata = hookMetadataSchema.safeParse(input);
+  if (!metadata.success) return undefined;
+  if (metadata.data.tool_input !== undefined) return metadata.data.tool_input;
+  return metadata.data.toolCall?.args;
 }
 
-function getRawHookToolInput(input: unknown): unknown {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  if (Object.hasOwn(input, 'tool_input')) return (input as Record<string, unknown>).tool_input;
-  const toolCall = (input as Record<string, unknown>).toolCall;
-  if (toolCall && typeof toolCall === 'object' && !Array.isArray(toolCall)) {
-    return (toolCall as Record<string, unknown>).args;
-  }
-  return undefined;
+function getHookAuditCwd<T>(input: T): string | null {
+  const metadata = hookAuditMetadataSchema.safeParse(input);
+  if (!metadata.success) return null;
+  return metadata.data.cwd ?? metadata.data.toolCall?.args?.Cwd ?? null;
 }
 
-function getHookAuditCwd(input: unknown): string | null {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const cwd = (input as Record<string, unknown>).cwd;
-  if (typeof cwd === 'string') return cwd;
-  const toolCall = (input as Record<string, unknown>).toolCall;
-  if (!toolCall || typeof toolCall !== 'object' || Array.isArray(toolCall)) return null;
-  const args = (toolCall as Record<string, unknown>).args;
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
-  const commandCwd = (args as Record<string, unknown>).Cwd;
-  return typeof commandCwd === 'string' ? commandCwd : null;
-}
-
-export async function runConfiguredHookAdapter<T>(
-  adapter: ConfiguredHookAdapter<T>,
-): Promise<void> {
+export async function runConfiguredHookAdapter<
+  T,
+  ToolName = z.input<z.ZodUnknown>,
+  ToolInput = z.input<z.ZodUnknown>,
+>(adapter: ConfiguredHookAdapter<T, ToolName, ToolInput>): Promise<void> {
   const outputDeny: HookDenyOutput = (denial) => outputHookDeny(adapter.createDenyOutput, denial);
   const createAllowOutput = adapter.createAllowOutput;
   const outputAllow = createAllowOutput
     ? () => console.log(JSON.stringify(createAllowOutput()))
     : undefined;
 
-  await runHookAdapter<T>({ ...adapter, outputDeny, outputAllow });
+  await runHookAdapter({ ...adapter, outputDeny, outputAllow });
 }

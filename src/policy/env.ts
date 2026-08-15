@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   EffectiveCapabilitySource,
   EffectiveSafetyLevel,
@@ -26,9 +27,29 @@ export const ENV_FLAGS = {
 
 const SAFETY_LEVELS: PolicySafetyLevel[] = ['standard', 'strict', 'paranoid'];
 
-type Capability = 'failClosed' | 'paranoidRm' | 'paranoidInterpreters';
+type CapabilityValues = {
+  failClosed: boolean;
+  paranoidRm: boolean;
+  paranoidInterpreters: boolean;
+};
+type CapabilitySources = {
+  failClosed: EffectiveCapabilitySource;
+  paranoidRm: EffectiveCapabilitySource;
+  paranoidInterpreters: EffectiveCapabilitySource;
+};
+type SourceLists = {
+  failClosed: string[];
+  paranoidRm: string[];
+  paranoidInterpreters: string[];
+  worktreeMode: string[];
+};
 
-function expandSafetyLevel(level: PolicySafetyLevel): Record<Capability, boolean> {
+const EnvFlagInputSchema = z.union([
+  z.string().transform((name) => ({ name })),
+  z.object({ name: z.string(), legacyName: z.string().optional() }),
+]);
+
+function expandSafetyLevel(level: PolicySafetyLevel) {
   return {
     failClosed: level === 'strict' || level === 'paranoid',
     paranoidRm: level === 'paranoid',
@@ -46,7 +67,7 @@ function maxSafetyLevel(policyLevel: PolicySafetyLevel, envLevel: PolicySafetyLe
 function parseEnvLevel(): PolicySafetyLevel | undefined {
   const value = getEnvFlagValue(ENV_FLAGS.level);
   if (value === undefined || value === '') return undefined;
-  if (SAFETY_LEVELS.includes(value as PolicySafetyLevel)) return value as PolicySafetyLevel;
+  if (value === 'standard' || value === 'strict' || value === 'paranoid') return value;
   console.error(
     `CC Safety Net: ignored invalid ${ENV_FLAGS.level.name}=${JSON.stringify(value.slice(0, 40))}. Use ${SAFETY_LEVELS.join(', ')}.`,
   );
@@ -64,9 +85,7 @@ export function shouldRecordAllowedCommands(): boolean {
   return resolveAuditScope(getEnvFlagValue(ENV_FLAGS.auditScope)) === 'all';
 }
 
-export function deriveEffectiveSafetyLevel(
-  values: Record<Capability, boolean>,
-): EffectiveSafetyLevel {
+export function deriveEffectiveSafetyLevel(values: CapabilityValues): EffectiveSafetyLevel {
   if (values.failClosed && values.paranoidRm && values.paranoidInterpreters) return 'paranoid';
   if (values.failClosed && !values.paranoidRm && !values.paranoidInterpreters) return 'strict';
   if (!values.failClosed && !values.paranoidRm && !values.paranoidInterpreters) return 'standard';
@@ -80,12 +99,12 @@ export function getCCSafetyNetEnvModes(
   const envLevel = parseEnvLevel();
   const baseLevel = maxSafetyLevel(policyLevel, envLevel);
   const values = expandSafetyLevel(baseLevel);
-  const capabilitySources: Record<Capability, EffectiveCapabilitySource> = {
+  const capabilitySources: CapabilitySources = {
     failClosed: baseLevel === policyLevel ? 'preset' : 'environment',
     paranoidRm: baseLevel === policyLevel ? 'preset' : 'environment',
     paranoidInterpreters: baseLevel === policyLevel ? 'preset' : 'environment',
   };
-  const sources: Record<Capability | 'worktreeMode', string[]> = {
+  const sources: SourceLists = {
     failClosed: [`policy safety.level=${policyLevel}`],
     paranoidRm: [`policy safety.level=${policyLevel}`],
     paranoidInterpreters: [`policy safety.level=${policyLevel}`],
@@ -170,7 +189,7 @@ export function getCCSafetyNetEnvModes(
 }
 
 export function envTruthy(flag: string | EnvFlag): boolean {
-  const value = typeof flag === 'string' ? getOwnEnvValue(flag) : getEnvFlagValue(flag);
+  const value = getEnvFlagValue(EnvFlagInputSchema.parse(flag));
   return value === '1' || value?.toLowerCase() === 'true';
 }
 

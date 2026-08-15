@@ -1,16 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { parseCommandArgs } from '@/cli/args';
 import { printInstallBanner } from '@/cli/install/banner';
 import {
   canPromptInstallTargets,
+  type InstallPromptInput,
   type KimiInstallMethod,
   promptInstallTargets,
   promptKimiInstallMethod,
 } from '@/cli/install/prompt';
 import { awaitWithSpinner, resolveAfterOptionalBanner } from '@/cli/startup/banner';
 import { colors } from '@/cli/utils/colors';
+import type { LolcatOutput } from '@/cli/utils/lolcat';
 import { installAmp, uninstallAmp } from '@/integrations/amp/install';
 import {
   installAntigravityCli,
@@ -88,10 +91,13 @@ type NativeInstallPlan = {
   update?: boolean;
 };
 type InstallTargetSelection = readonly InstallTarget[] | null | 'update';
+type InstallOutput = NodeJS.WritableStream & {
+  readonly isTTY?: boolean;
+};
 
 export type RunInstallCommandOptions = {
-  input?: NodeJS.ReadStream;
-  output?: NodeJS.WriteStream;
+  input?: InstallPromptInput;
+  output?: InstallOutput;
   probeTargets?: InstallTargetProbe;
   detectConfiguredTargets?: () => Promise<readonly InstallTarget[]>;
   fetchVersion?: VersionFetcher;
@@ -105,22 +111,29 @@ export type RunInstallCommandOptions = {
 
 type UpdateCommandOptions = {
   fetchVersion?: VersionFetcher;
-  input?: NodeJS.ReadStream;
-  output?: NodeJS.WriteStream;
+  input?: InstallPromptInput;
+  output?: LolcatOutput;
   showBanner?: boolean;
 };
 
 type NativeInstallDefinition = {
-  installCommands:
-    | readonly NativeCommand[]
-    | ((
-        homeDir: string,
-        codexPluginListOutput?: string | null,
-      ) => NativeInstallPlan | Promise<NativeInstallPlan>);
+  installCommands: (
+    homeDir: string,
+    codexPluginListOutput?: string | null,
+  ) => NativeInstallPlan | Promise<NativeInstallPlan>;
   uninstallCommands?: readonly NativeCommand[];
   beforeInstall?: (homeDir: string) => void;
   postInstallMessage?: string;
 };
+interface NativeInstallProviders {
+  'claude-code': NativeInstallDefinition;
+  codex: NativeInstallDefinition;
+  'copilot-cli': NativeInstallDefinition;
+  'gemini-cli': NativeInstallDefinition;
+  openclaw: NativeInstallDefinition;
+  opencode: NativeInstallDefinition;
+  pi: NativeInstallDefinition;
+}
 type InstallTargetResolution = {
   ready?: Promise<unknown>;
   finish: () => Promise<InstallTargetSelection>;
@@ -164,7 +177,7 @@ function hasCodexMarketplace(output: string | null): boolean {
   return /^Marketplace `cc-marketplace`\s*$/m.test(output ?? '');
 }
 
-const NATIVE_INSTALLS: Record<NativeInstallTarget, NativeInstallDefinition> = {
+const NATIVE_INSTALLS: NativeInstallProviders = {
   'claude-code': {
     installCommands: (homeDir) => {
       const update = hasClaudeInstalledPlugin(homeDir, 'cc-safety-net@cc-marketplace');
@@ -309,10 +322,12 @@ const NATIVE_INSTALLS: Record<NativeInstallTarget, NativeInstallDefinition> = {
   },
   opencode: {
     beforeInstall: clearOpenCodeCache,
-    installCommands: [['opencode', 'plugin', '-g', '-f', 'cc-safety-net@latest']],
+    installCommands: () => ({
+      commands: [['opencode', 'plugin', '-g', '-f', 'cc-safety-net@latest']],
+    }),
   },
   pi: {
-    installCommands: [['pi', 'install', 'npm:cc-safety-net']],
+    installCommands: () => ({ commands: [['pi', 'install', 'npm:cc-safety-net']] }),
     uninstallCommands: [['pi', 'uninstall', 'npm:cc-safety-net']],
   },
 };
@@ -321,16 +336,31 @@ function getHomeDir() {
   return process.env.HOME ?? homedir();
 }
 
+const installationSettingsSchema = z.object({}).loose();
+const copilotSettingsSchema = z
+  .object({ enabledPlugins: z.record(z.string(), z.unknown()) })
+  .loose();
+const piSettingsSchema = z.object({ packages: z.array(z.unknown()) }).loose();
+const piPackageSettingsSchema = z
+  .object({
+    source: z.string(),
+    extensions: z.unknown().optional(),
+  })
+  .loose();
+
+type InstallationSettings = z.infer<typeof installationSettingsSchema>;
+
 function parseJsonSettings(
   configPath: string,
   preprocess = (raw: string) => raw,
-): Record<string, unknown> {
+): InstallationSettings {
   try {
     const config = JSON.parse(preprocess(readFileSync(configPath, 'utf-8')));
-    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    const parsed = installationSettingsSchema.safeParse(config);
+    if (!parsed.success) {
       throw new Error(`Settings file ${configPath} must be a JSON object`);
     }
-    return config as Record<string, unknown>;
+    return parsed.data;
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error(`Failed to parse ${configPath}: ${error.message}`);
@@ -343,18 +373,20 @@ function enableCopilotPlugin(homeDir: string): string | undefined {
   const settingsPath = join(_getCopilotConfigHome(homeDir), 'settings.json');
   if (!existsSync(settingsPath)) return;
 
-  const settings = parseJsonSettings(settingsPath, stripJsonComments);
+  const parsed = copilotSettingsSchema.safeParse(
+    parseJsonSettings(settingsPath, stripJsonComments),
+  );
+  if (!parsed.success) return;
+  const settings = parsed.data;
   const enabledPlugins = settings.enabledPlugins;
-  if (!enabledPlugins || typeof enabledPlugins !== 'object' || Array.isArray(enabledPlugins))
-    return;
-  if ((enabledPlugins as Record<string, unknown>)[COPILOT_PLUGIN_ID] !== false) return;
+  if (enabledPlugins[COPILOT_PLUGIN_ID] !== false) return;
 
   // Flip the flag in the raw text so hand-written JSONC comments and formatting survive;
   // fall back to a stringify rewrite when the text form is unmatchable (e.g. a comment
   // between key and value).
   const raw = readFileSync(settingsPath, 'utf-8');
   const flipped = raw.replace(new RegExp(`("${COPILOT_PLUGIN_ID}"\\s*:\\s*)false`), '$1true');
-  (enabledPlugins as Record<string, unknown>)[COPILOT_PLUGIN_ID] = true;
+  enabledPlugins[COPILOT_PLUGIN_ID] = true;
   atomicWriteFile(
     settingsPath,
     flipped !== raw ? flipped : `${JSON.stringify(settings, null, 2)}\n`,
@@ -366,29 +398,46 @@ function removePiExtensionsFilter(homeDir: string): string | undefined {
   const settingsPath = getPiSettingsPath(homeDir);
   if (!existsSync(settingsPath)) return;
 
-  const settings = parseJsonSettings(settingsPath);
-  if (!Array.isArray(settings.packages)) return;
+  const parsed = piSettingsSchema.safeParse(parseJsonSettings(settingsPath));
+  if (!parsed.success) return;
+  const settings = parsed.data;
 
-  const entry = settings.packages.find(
-    (candidate): candidate is Record<string, unknown> =>
-      !!candidate &&
-      typeof candidate === 'object' &&
-      !Array.isArray(candidate) &&
-      isPiSafetyNetPackageSource((candidate as Record<string, unknown>).source) &&
-      'extensions' in candidate,
+  const entries = settings.packages.map((candidate) =>
+    piPackageSettingsSchema.safeParse(candidate),
   );
-  if (!entry) return;
+  const entryIndex = entries.findIndex(
+    (candidate) =>
+      candidate.success &&
+      isPiSafetyNetPackageSource(candidate.data.source) &&
+      candidate.data.extensions !== undefined,
+  );
+  const entry = entries[entryIndex];
+  if (!entry?.success) return;
 
-  delete entry.extensions;
+  delete entry.data.extensions;
+  settings.packages[entryIndex] = entry.data;
   atomicWriteFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   return `Enabled npm:cc-safety-net extensions in ${settingsPath}`;
 }
 
 function parseInstallTarget(args: readonly string[], action: InstallAction): InstallTarget {
-  const parsed = parseCommandArgs(
+  const parsed = parseCommandArgs<InstallTarget, never>(
     {
       label: action,
-      booleans: Object.fromEntries(INSTALL_TARGETS.map((target) => [target.target, [target.flag]])),
+      booleans: {
+        amp: ['--amp'],
+        'antigravity-cli': ['--agy-cli'],
+        'claude-code': ['--claude-code'],
+        codex: ['--codex'],
+        'copilot-cli': ['--copilot-cli'],
+        cursor: ['--cursor'],
+        'gemini-cli': ['--gemini-cli'],
+        'hermes-agent': ['--hermes-agent'],
+        'kimi-code': ['--kimi-code'],
+        openclaw: ['--openclaw'],
+        opencode: ['--opencode'],
+        pi: ['--pi'],
+      },
     },
     args,
   );
@@ -398,9 +447,10 @@ function parseInstallTarget(args: readonly string[], action: InstallAction): Ins
   const targets = INSTALL_TARGETS.filter((target) => parsed.flags[target.target]).map(
     (target) => target.target,
   );
-  if (targets.length !== 1)
+  const target = targets[0];
+  if (targets.length !== 1 || !target)
     throw new Error(`Choose exactly one ${action} target: ${[...TARGET_FLAGS.keys()].join(', ')}`);
-  return targets[0] as InstallTarget;
+  return target;
 }
 
 // Only probes that leave the inspected runtime untouched run here: `claude plugin list`,
@@ -451,7 +501,10 @@ async function detectConfiguredInstallTargets(
           !hasCodexLegacyPlugin(state.codexPluginListOutput) ||
           hasCodexReplacementPlugin(state.codexPluginListOutput),
       )
-      .map((hook) => hook.platform as InstallTarget)
+      .flatMap((hook) => {
+        const target = INSTALL_TARGETS.find((candidate) => candidate.target === hook.platform);
+        return target ? [target.target] : [];
+      })
   );
 }
 
@@ -508,10 +561,7 @@ async function installNativeTarget(
 ): Promise<string> {
   const definition = NATIVE_INSTALLS[target];
   definition.beforeInstall?.(homeDir);
-  const plan =
-    typeof definition.installCommands === 'function'
-      ? await definition.installCommands(homeDir, codexPluginListOutput)
-      : { commands: definition.installCommands };
+  const plan = await definition.installCommands(homeDir, codexPluginListOutput);
   await runNativeCommands(plan.commands);
   await runNativeCleanupCommands(plan.cleanupCommands ?? []);
   return [
@@ -567,17 +617,20 @@ function runConfigInstallTarget(
       : `${pastTense} ${name} hook ${action === 'install' ? 'in' : 'from'} ${result.path}`;
 }
 
-const MANAGED_ARTIFACT_INSTALLS: Record<
-  ManagedArtifactTarget,
-  {
-    install: (homeDir: string) => InstallResult | Promise<InstallResult>;
-    uninstall: (homeDir: string) => InstallResult | Promise<InstallResult>;
-    /** Returns whether it changed host state, which an unchanged artifact alone cannot tell. */
-    afterInstall?: (homeDir: string) => Promise<boolean>;
-    beforeUninstall?: (homeDir: string) => Promise<void>;
-    restartNote: string;
-  }
-> = {
+type ManagedArtifactInstallDefinition = {
+  install: (homeDir: string) => InstallResult | Promise<InstallResult>;
+  uninstall: (homeDir: string) => InstallResult | Promise<InstallResult>;
+  /** Returns whether it changed host state, which an unchanged artifact alone cannot tell. */
+  afterInstall?: (homeDir: string) => Promise<boolean>;
+  beforeUninstall?: (homeDir: string) => Promise<void>;
+  restartNote: string;
+};
+interface ManagedArtifactInstallProviders {
+  amp: ManagedArtifactInstallDefinition;
+  'hermes-agent': ManagedArtifactInstallDefinition;
+}
+
+const MANAGED_ARTIFACT_INSTALLS: ManagedArtifactInstallProviders = {
   amp: {
     install: installAmp,
     uninstall: uninstallAmp,
@@ -828,7 +881,10 @@ async function detectUpdateTargets(homeDir: string, fetchVersion = defaultVersio
     // update must never install something new.
     ...state.hooks
       .filter((hook) => hook.platform !== 'copilot-cli' && hook.detected)
-      .map((hook) => hook.platform as InstallTarget),
+      .flatMap((hook) => {
+        const target = INSTALL_TARGETS.find((candidate) => candidate.target === hook.platform);
+        return target ? [target.target] : [];
+      }),
     ...(
       [COPILOT_PLUGIN_DIR, COPILOT_PRE_RENAME_PLUGIN_DIR, COPILOT_LEGACY_PLUGIN_DIR] as const
     ).flatMap((dir) =>
@@ -887,7 +943,7 @@ async function updateInstalledIntegrations(options: UpdateCommandOptions): Promi
           clearNpxSafetyNetCache(homeDir);
           return null;
         })
-        .catch((error: unknown) => formatInstallError(error))
+        .catch((error) => formatInstallError(installErrorSchema.parse(error)))
     : null;
 
   // The targets drive different host CLIs and are independent, so they run together and one
@@ -912,7 +968,10 @@ async function updateInstalledIntegrations(options: UpdateCommandOptions): Promi
           detected.codexPluginListOutput,
         ).then(
           (message) => ({ message, failed: false }),
-          (error: unknown) => ({ message: formatInstallError(error), failed: true }),
+          (error) => ({
+            message: formatInstallError(installErrorSchema.parse(error)),
+            failed: true,
+          }),
         );
       }),
     ),
@@ -922,7 +981,11 @@ async function updateInstalledIntegrations(options: UpdateCommandOptions): Promi
     },
   );
   reports.forEach((report) => {
-    report.failed ? console.error(report.message) : output.write(`${report.message}\n`);
+    if (report.failed) {
+      console.error(report.message);
+      return;
+    }
+    output.write(`${report.message}\n`);
   });
   return reports.some((report) => report.failed) ? 1 : 0;
 }
@@ -934,8 +997,8 @@ export function runUpdateCommand(
   return Promise.resolve()
     .then(() => parseUpdateArgs(args))
     .then(() => updateInstalledIntegrations(options))
-    .catch((error: unknown) => {
-      console.error(formatInstallError(error));
+    .catch((error) => {
+      console.error(formatInstallError(installErrorSchema.parse(error)));
       return 1;
     });
 }
@@ -1008,14 +1071,23 @@ export async function runInstallCommand(
 
     return 0;
   } catch (e) {
-    console.error(formatInstallError(e));
+    console.error(formatInstallError(installErrorSchema.parse(e)));
     return 1;
   }
 }
 
-function formatInstallError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+const errorCodeSchema = z.object({ code: z.unknown().optional() });
+const installErrorSchema = z.union([
+  z.instanceof(Error).transform((error) => ({
+    message: error.message,
+    code: errorCodeSchema.parse(error).code ?? null,
+  })),
+  z.unknown().transform((error) => ({ message: String(error), code: null })),
+]);
+type InstallError = z.infer<typeof installErrorSchema>;
+
+function formatInstallError(error: InstallError): string {
+  const { message, code } = error;
 
   if (code === 'EACCES' || code === 'EPERM') {
     return `${message}\nCheck file permissions for the target config file and parent directory.`;

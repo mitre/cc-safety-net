@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { evaluateRuntimeGuard } from '@/integrations/runtime';
 import { createToolInvocation } from '@/ir/invocation';
 import type { PolicySnapshot } from '@/ir/policy';
+import type { getCCSafetyNetEnvModes } from '@/policy/env';
 
 interface SelfTestCase {
   command: string;
@@ -53,26 +54,29 @@ const SNAPSHOT: PolicySnapshot = Object.freeze({
   }),
 });
 
-const STANDARD_MODES = {
+const disabledPresetCapability = () =>
+  ({
+    enabled: false,
+    source: 'preset',
+    sources: [],
+  }) satisfies ReturnType<typeof getCCSafetyNetEnvModes>['capabilities']['fail_closed'];
+
+const STANDARD_MODES: ReturnType<typeof getCCSafetyNetEnvModes> = {
   strict: false,
   paranoidRm: false,
   paranoidInterpreters: false,
   worktreeMode: false,
   effectiveLevel: 'standard' as const,
   capabilities: {
-    fail_closed: { enabled: false, source: 'preset' as const, sources: [] as string[] },
-    paranoid_rm: { enabled: false, source: 'preset' as const, sources: [] as string[] },
-    paranoid_interpreters: {
-      enabled: false,
-      source: 'preset' as const,
-      sources: [] as string[],
-    },
+    fail_closed: disabledPresetCapability(),
+    paranoid_rm: disabledPresetCapability(),
+    paranoid_interpreters: disabledPresetCapability(),
   },
   sources: {
-    failClosed: [] as string[],
-    paranoidRm: [] as string[],
-    paranoidInterpreters: [] as string[],
-    worktreeMode: [] as string[],
+    failClosed: [],
+    paranoidRm: [],
+    paranoidInterpreters: [],
+    worktreeMode: [],
   },
 };
 

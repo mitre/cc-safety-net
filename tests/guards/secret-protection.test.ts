@@ -15,7 +15,11 @@ import {
 } from '@/guards/secret-protection';
 import type { ToolRoute } from '@/ir/invocation';
 import type { SecretProtectionConfig } from '@/ir/policy';
-import { getNonCommandToolInputKind, normalizeToolName } from '@/parser/tool-input';
+import {
+  getNonCommandToolInputKind,
+  normalizeToolName,
+  type ToolInputValue,
+} from '@/parser/tool-input';
 import {
   SECRET_CODING_CLI_RULES,
   SECRET_PROTECTION_RULE_IDS,
@@ -40,7 +44,7 @@ const CONFIG_WITH_CODING_CLI_RULES_DISABLED: SecretProtectionConfig = {
 
 function findSensitiveTargetInToolInput(
   toolName: string,
-  input: unknown,
+  input: ToolInputValue,
   cwd = process.cwd(),
   config?: SecretProtectionConfig,
 ) {
@@ -98,7 +102,12 @@ describe('secret protection rule metadata', () => {
     for (const entry of SECRET_PROTECTION_RULE_METADATA) {
       expect(entry.category).not.toBe('');
       expect(entry.label).not.toBe('');
-      expect('paths' in entry ? entry.paths.length > 0 : entry.description !== '').toBe(true);
+      if ('paths' in entry) {
+        expect(entry.paths).toBeDefined();
+        if (entry.paths !== undefined) expect(entry.paths.length).toBeGreaterThan(0);
+        continue;
+      }
+      expect(entry.description).not.toBe('');
     }
   });
 
@@ -1563,23 +1572,25 @@ describe('secret protection home-anchored credential locations', () => {
   test('does not block home-only config paths outside ~ (avoids repo false positives)', () => {
     const cwd = join(tmpdir(), 'secret-protection-project');
 
-    for (const target of [
-      '/home/user/.aws/config',
-      '/home/user/.kube/config',
-      '/home/user/.docker/config.json',
-      '/home/user/.config/gh/hosts.yml',
-      '/home/user/.config/gcloud',
-      '/home/user/.config/gcloud/application_default_credentials.json',
-      'tests/fixtures/.ssh/config',
-      '.aws/README.md',
-      'infra/.kube/config',
-      'infra/.kube/config.bak',
-      'docs/.docker/config.json',
-      'docs/.docker/config.json.old',
-      'deploy/.config/gh/hosts.yml',
-    ]) {
-      expect(findSensitivePathTarget([target], cwd), target).toBeNull();
-    }
+    withEnv({ HOME: join(tmpdir(), 'secret-protection-other-home') }, () => {
+      for (const target of [
+        '/home/user/.aws/config',
+        '/home/user/.kube/config',
+        '/home/user/.docker/config.json',
+        '/home/user/.config/gh/hosts.yml',
+        '/home/user/.config/gcloud',
+        '/home/user/.config/gcloud/application_default_credentials.json',
+        'tests/fixtures/.ssh/config',
+        '.aws/README.md',
+        'infra/.kube/config',
+        'infra/.kube/config.bak',
+        'docs/.docker/config.json',
+        'docs/.docker/config.json.old',
+        'deploy/.config/gh/hosts.yml',
+      ]) {
+        expect(findSensitivePathTarget([target], cwd), target).toBeNull();
+      }
+    });
   });
 });
 

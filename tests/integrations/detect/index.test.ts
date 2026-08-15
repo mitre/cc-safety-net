@@ -12,6 +12,15 @@ import type { HookStatus } from '@/integrations/doctor-types';
 import { stripJsonComments } from '@/integrations/jsonc';
 import { withEnv } from '../../helpers.ts';
 
+type DetectionFixtureValue =
+  | boolean
+  | number
+  | string
+  | null
+  | DetectionFixtureValue[]
+  | { [key: string]: DetectionFixtureValue };
+type DetectionFixture = { [key: string]: DetectionFixtureValue };
+
 function expectHookState(
   hook: HookStatus | undefined,
   state: 'configured' | 'disabled' | 'n/a',
@@ -105,22 +114,20 @@ function _writeCopilotInlineConfig(
   } = {},
 ): void {
   const { commandKey = 'command', disableAllHooks } = options;
-  _writeConfigFile(
-    filePath,
-    JSON.stringify({
-      ...(disableAllHooks !== undefined ? { disableAllHooks } : {}),
-      hooks: {
-        preToolUse: [
-          {
-            type: 'command',
-            [commandKey]: command,
-            cwd: '.',
-            timeoutSec: 15,
-          },
-        ],
-      },
-    }),
-  );
+  const config: DetectionFixture & { disableAllHooks?: boolean } = {
+    hooks: {
+      preToolUse: [
+        {
+          type: 'command',
+          [commandKey]: command,
+          cwd: '.',
+          timeoutSec: 15,
+        },
+      ],
+    },
+  };
+  if (disableAllHooks !== undefined) config.disableAllHooks = disableAllHooks;
+  _writeConfigFile(filePath, JSON.stringify(config));
 }
 
 function _expectCopilotConfig(
@@ -146,7 +153,7 @@ function _writeKimiConfig(configPath: string, content = 'cc-safety-net hook --ki
   _writeConfigFile(configPath, content);
 }
 
-function _writeAntigravityHooks(homeDir: string, config: unknown): string {
+function _writeAntigravityHooks(homeDir: string, config: DetectionFixture): string {
   const configPath = join(homeDir, '.gemini', 'config', 'hooks.json');
   _writeConfigFile(configPath, JSON.stringify(config, null, 2));
   return configPath;
@@ -319,7 +326,7 @@ describe('detectAllHooks', () => {
     });
   });
 
-  function _writeCursorHooks(homeDir: string, config: unknown): string {
+  function _writeCursorHooks(homeDir: string, config: DetectionFixture): string {
     const configPath = join(homeDir, '.cursor', 'hooks.json');
     mkdirSync(join(configPath, '..'), { recursive: true });
     writeFileSync(configPath, JSON.stringify(config, null, 2));

@@ -1,17 +1,26 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import pkg from '../../package.json';
 import { getRuntimeImportSpecifiers } from '../../scripts/verify-build';
 
 const MANIFEST_PATH = 'kimi.plugin.json';
+const manifestSchema = z.object({
+  name: z.string(),
+  version: z.string(),
+  hooks: z.array(
+    z.object({
+      event: z.string(),
+      matcher: z.string(),
+      command: z.string(),
+      timeout: z.number(),
+    }),
+  ),
+});
 
 function readManifest() {
-  return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as {
-    name: string;
-    version: string;
-    hooks: Array<{ event: string; matcher: string; command: string; timeout: number }>;
-  };
+  return manifestSchema.parse(JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')));
 }
 
 function gitIncludes(path: string) {

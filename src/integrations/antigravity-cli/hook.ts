@@ -1,4 +1,5 @@
 import { isAbsolute, relative } from 'node:path';
+import { z } from 'zod';
 import { createFailedClosedDenial, type IntegrationDenial } from '@/integrations/denial';
 import { getToolRoute, runConfiguredHookAdapter } from '@/integrations/hook/common';
 import {
@@ -14,18 +15,26 @@ import {
 } from '@/integrations/runtime';
 import type { CommandToolKind, ToolCallContext } from '@/ir/invocation';
 
+const antigravityToolArgsSchema = z.record(z.string(), z.json());
+const antigravityCliHookInputSchema = z.object({
+  toolCall: z
+    .object({
+      name: z.string().optional(),
+      args: antigravityToolArgsSchema.optional(),
+    })
+    .optional(),
+  stepIdx: z.number().optional(),
+  conversationId: z.string().optional(),
+  workspacePaths: z.array(z.string()).optional(),
+  transcriptPath: z.string().optional(),
+  artifactDirectoryPath: z.string().optional(),
+});
+const antigravityCliIngressSchema = z.union([z.json(), z.undefined()]);
+
 /** Antigravity CLI PreToolUse hook input format */
-interface AntigravityCliHookInput {
-  toolCall?: {
-    name?: string;
-    args?: Record<string, unknown>;
-  };
-  stepIdx?: number;
-  conversationId?: string;
-  workspacePaths?: string[];
-  transcriptPath?: string;
-  artifactDirectoryPath?: string;
-}
+type AntigravityCliHookInput = z.infer<typeof antigravityCliHookInputSchema>;
+type AntigravityCliIngress = z.infer<typeof antigravityCliIngressSchema>;
+type AntigravityToolInput = z.infer<typeof antigravityToolArgsSchema> | undefined;
 
 /** Antigravity CLI PreToolUse hook output format */
 interface AntigravityCliHookOutput {
@@ -54,34 +63,46 @@ export function getAntigravityCliToolRoute(toolName: string) {
 type AntigravityDenyOutput = (denial: IntegrationDenial) => void;
 
 export async function runAntigravityCliHook(): Promise<void> {
-  await runConfiguredHookAdapter<AntigravityCliHookInput>({
+  await runConfiguredHookAdapter<AntigravityCliIngress, string | undefined, AntigravityToolInput>({
     agent: 'antigravity-cli',
     createDenyOutput: (message): AntigravityCliHookOutput => ({
       decision: 'deny',
       reason: message,
     }),
     isSupported: () => true,
-    getToolName: (input) => input.toolCall?.name,
+    getToolName: (input) => antigravityCliHookInputSchema.safeParse(input).data?.toolCall?.name,
     getToolInput: (input, toolName) => ({
       ok: true,
-      input: normalizeAntigravityToolArgs(input.toolCall?.args, toolName),
+      input: normalizeAntigravityToolArgs(
+        antigravityCliHookInputSchema.safeParse(input).data?.toolCall?.args,
+        toolName,
+      ),
       route: getAntigravityCliToolRoute(toolName),
     }),
-    getContext: resolveAntigravityContext,
-    getSessionId: (input) => input.conversationId,
+    getContext: (input, toolInput, toolName, outputDeny) => {
+      const parsedInput = antigravityCliHookInputSchema.safeParse(input);
+      if (!parsedInput.success) {
+        outputAntigravityCwdDeny(outputDeny, toolInput, toolName);
+        return null;
+      }
+      return resolveAntigravityContext(parsedInput.data, toolInput, toolName, outputDeny);
+    },
+    getSessionId: (input) => antigravityCliHookInputSchema.safeParse(input).data?.conversationId,
   });
 }
 
 /** @internal */
 export function resolveAntigravityCwd(
-  input: AntigravityCliHookInput,
+  input: AntigravityCliIngress,
   outputDeny: AntigravityDenyOutput,
 ): string | null | undefined {
-  const toolName = input.toolCall?.name;
-  if (typeof toolName !== 'string') return undefined;
+  const parsedInput = antigravityCliHookInputSchema.safeParse(input);
+  if (!parsedInput.success) return undefined;
+  const toolName = parsedInput.data.toolCall?.name;
+  if (!toolName) return undefined;
   const context = resolveAntigravityContext(
-    input,
-    normalizeAntigravityToolArgs(input.toolCall?.args, toolName),
+    parsedInput.data,
+    normalizeAntigravityToolArgs(parsedInput.data.toolCall?.args, toolName),
     toolName,
     outputDeny,
   );
@@ -90,7 +111,7 @@ export function resolveAntigravityCwd(
 
 function resolveAntigravityContext(
   input: AntigravityCliHookInput,
-  toolInput: unknown,
+  toolInput: AntigravityToolInput,
   toolName: string,
   outputDeny: AntigravityDenyOutput,
 ): ToolCallContext | null {
@@ -136,27 +157,31 @@ function resolveAntigravityContext(
     };
   }
   const cwd = args.Cwd;
-  if (typeof cwd !== 'string' || cwd.trim() === '') {
+  const parsedCwd = z
+    .string()
+    .refine((value) => value.trim() !== '')
+    .safeParse(cwd);
+  if (!parsedCwd.success) {
     outputAntigravityCwdDeny(outputDeny, toolInput, toolName);
     return null;
   }
 
-  const containedCwd = resolveContainedCwd(cwd, configRoots);
+  const containedCwd = resolveContainedCwd(parsedCwd.data, configRoots);
   if (containedCwd) {
     const configCwd = mostSpecificContainingRoot(containedCwd, configRoots);
     if (!configCwd) {
-      outputAntigravityCwdDeny(outputDeny, toolInput, toolName, cwd);
+      outputAntigravityCwdDeny(outputDeny, toolInput, toolName, parsedCwd.data);
       return null;
     }
     return { configCwd, executionCwd: containedCwd, policyConfigCwds: configRoots };
   }
 
-  outputAntigravityCwdDeny(outputDeny, toolInput, toolName, cwd);
+  outputAntigravityCwdDeny(outputDeny, toolInput, toolName, parsedCwd.data);
   return null;
 }
 
 function resolveAntigravityTargetRoot(
-  toolInput: unknown,
+  toolInput: AntigravityToolInput,
   toolName: string,
   configRoots: readonly string[],
 ): string | null {
@@ -194,17 +219,14 @@ function isSameOrInside(path: string, root: string): boolean {
 
 function outputAntigravityCwdDeny(
   outputDeny: AntigravityDenyOutput,
-  toolInput: unknown,
+  toolInput: AntigravityToolInput,
   toolName: string,
   cwd?: string,
 ): void {
-  const command =
-    toolInput && typeof toolInput === 'object'
-      ? (toolInput as Record<string, unknown>).command
-      : undefined;
+  const command = z.string().safeParse(toolInput?.command).data;
   outputDeny(
     createFailedClosedDenial({
-      command: typeof command === 'string' ? command : undefined,
+      command,
       segment: cwd,
       toolName,
     }),
@@ -213,23 +235,17 @@ function outputAntigravityCwdDeny(
 
 function usableWorkspacePaths(input: AntigravityCliHookInput): string[] {
   if (input.workspacePaths === undefined) return [process.cwd()];
-  const workspacePaths = Array.isArray(input.workspacePaths)
-    ? input.workspacePaths.filter((path) => typeof path === 'string' && path.trim() !== '')
-    : [];
+  const workspacePaths = input.workspacePaths?.filter((path) => path.trim() !== '') ?? [];
   return firstTrustedRoot(workspacePaths) ? workspacePaths : [];
 }
 
 function normalizeAntigravityToolArgs(
-  args: Record<string, unknown> | undefined,
+  args: z.infer<typeof antigravityToolArgsSchema> | undefined,
   toolName: string,
-): unknown {
+): AntigravityToolInput {
   if (!args) return undefined;
   if (toolName !== 'run_command') return args;
-  return {
-    ...args,
-    command:
-      typeof args.CommandLine === 'string' && args.CommandLine !== ''
-        ? args.CommandLine
-        : undefined,
-  };
+  const command = z.string().min(1).safeParse(args.CommandLine).data;
+  if (command) return { ...args, command };
+  return Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'command'));
 }

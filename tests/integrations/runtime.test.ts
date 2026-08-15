@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { GuardEvaluationError } from '@/engine/guard';
+import { type GuardDependencies, GuardEvaluationError } from '@/engine/guard';
 import { evaluateRuntimeGuard } from '@/integrations/runtime';
 import { createToolInvocation } from '@/ir/invocation';
 import { readAuditLogEntriesForSession, withTempDir } from '../helpers';
@@ -15,7 +15,7 @@ function invocation(command = 'echo ok') {
   );
 }
 
-function dependencies(overrides: Record<string, unknown> = {}) {
+function dependencies(overrides: Partial<GuardDependencies> = {}) {
   return {
     findPolicyMutation: () => null,
     loadPolicySnapshot: () => policySnapshot(),
@@ -101,7 +101,8 @@ describe('integration runtime', () => {
   test('keeps tool-input-limit error audits non-reflective', async () => {
     await withTempDir('cc-safety-net-runtime-limit-', (homeDir) => {
       const marker = 'private-runtime-limit-marker';
-      const nested = Array.from({ length: 65 }).reduce<Record<string, unknown>>(
+      type NestedToolInput = { nested?: NestedToolInput };
+      const nested = Array.from({ length: 65 }).reduce<NestedToolInput>(
         (value) => ({ nested: value }),
         {},
       );

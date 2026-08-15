@@ -2,13 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { CustomRule } from '@/ir/policy';
 import { syncRulesConfig } from '@/rules/policy';
 import { analyzeTestCommand as analyzeCommand, loadTestPolicy } from '../helpers/policy';
 
-async function writeConfig(
-  dir: string,
-  data: { rules: Array<Record<string, unknown>>; version: number },
-) {
+async function writeConfig(dir: string, data: { rules: CustomRule[]; version: number }) {
   mkdirSync(join(dir, '.cc-safety-net/rules/project-rules'), { recursive: true });
   writeFileSync(
     join(dir, '.cc-safety-net/rules/rule.json'),
@@ -24,9 +22,7 @@ async function writeConfig(
       allowed_commands: [...new Set(data.rules.map((rule) => rule.command))],
       rules: data.rules,
       tests: data.rules.map((rule) => ({
-        command: [rule.command, rule.subcommand, (rule.block_args as string[] | undefined)?.[0]]
-          .filter(Boolean)
-          .join(' '),
+        command: [rule.command, rule.subcommand, rule.block_args?.[0]].filter(Boolean).join(' '),
         expect: 'blocked',
         rule: rule.name,
       })),

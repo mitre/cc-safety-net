@@ -27,16 +27,17 @@ export function projectGuardDenial(
   const evidence = options.includeEvidence
     ? evaluation.decision.evidence.find((item) => item.kind === 'command')
     : undefined;
-  return {
+  const denial: IntegrationDenial = {
     reason: evaluation.decision.reason,
     ruleId: evaluation.decision.ruleId,
     intent: evaluation.decision.intent,
     command: evidence?.command,
     segment: evidence?.segment,
     toolName: options.toolName,
-    // The fallback did not cause this denial, so it rides along as a warning.
-    ...(evaluation.configFallback ? { configWarning: evaluation.configFallback.reason } : {}),
   };
+  // The fallback did not cause this denial, so it rides along as a warning.
+  if (evaluation.configFallback) denial.configWarning = evaluation.configFallback.reason;
+  return denial;
 }
 
 export function createFailedClosedDenial(

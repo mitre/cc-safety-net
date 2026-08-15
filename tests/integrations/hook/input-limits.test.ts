@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import { HOOK_INPUT_MAX_BYTES, readBoundedHookInput } from '@/integrations/hook/common';
 import {
   getHookDenyReason,
-  type HookFormat,
   runAntigravityHook,
   runCodingCliHook,
   runCopilotHook,
@@ -56,9 +55,7 @@ describe('bounded hook input', () => {
   ] as const)('fails closed once for oversized %s protocol input', async (_name, format, run) => {
     const result = await run(`{"padding":"${'x'.repeat(HOOK_INPUT_MAX_BYTES)}"}`);
 
-    expect(getHookDenyReason(result, format as HookFormat)).toContain(
-      'Failed to parse hook input JSON.',
-    );
+    expect(getHookDenyReason(result, format)).toContain('Failed to parse hook input JSON.');
     expect(result.stdout.split('\n')).toHaveLength(1);
   });
 });

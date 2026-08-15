@@ -24,8 +24,8 @@ function withFeed<T>(
         0,
         Math.min(index, 59),
       ).toISOString();
-    const line = (decision: 'allow' | 'deny', index: number) =>
-      JSON.stringify({
+    const line = (decision: 'allow' | 'deny', index: number) => {
+      const entry = {
         ts: at(index),
         sessionId: 's1',
         decision,
@@ -33,8 +33,10 @@ function withFeed<T>(
         command: `git status ${decision} ${index}`,
         segment: `git status ${decision} ${index}`,
         reason: 'fixture',
-        ...(decision === 'deny' ? { ruleId: 'git.reset-hard' } : {}),
-      });
+      };
+      if (decision === 'deny') Object.assign(entry, { ruleId: 'git.reset-hard' });
+      return JSON.stringify(entry);
+    };
     const monthDir = join(logsDir, '-project-a', at(0).slice(0, 7));
     mkdirSync(monthDir, { recursive: true });
     writeFileSync(

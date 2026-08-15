@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { isAbsolute, join, normalize, parse, relative, resolve, sep } from 'node:path';
+import { z } from 'zod';
 
 const POLICY_FILESYSTEM_SCOPE = Symbol('PolicyFilesystemScope');
 const POLICY_FILESYSTEM_TARGET = Symbol('PolicyFilesystemTarget');
@@ -39,6 +40,12 @@ export interface PolicyFilesystemTarget {
   readonly scope: PolicyFilesystemScope;
   readonly relativePath: string;
   readonly path: string;
+}
+
+export function isPolicyFilesystemTarget(
+  target: string | PolicyFilesystemTarget,
+): target is PolicyFilesystemTarget {
+  return z.object({ [POLICY_FILESYSTEM_TARGET]: z.literal(true) }).safeParse(target).success;
 }
 
 export class PolicyFilesystemError extends Error {
@@ -122,7 +129,10 @@ export function readPolicyFile(target: PolicyFilesystemTarget): string | null {
       closeSync(descriptor);
     }
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -164,7 +174,10 @@ export function writePolicyFileAtomic(
   } catch (error) {
     if (descriptor !== null) closeSafely(descriptor);
     unlinkSafely(tempPath);
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -190,7 +203,10 @@ function readPolicyDirectory(target: PolicyFilesystemTarget): string[] | null {
     validateTarget(target, false, 'directory');
     return entries;
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -216,7 +232,10 @@ export function readPolicyDirectoryEntries(
     validateTarget(target, false, 'directory');
     return entries;
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -226,7 +245,10 @@ export function removePolicyFile(target: PolicyFilesystemTarget): void {
     unlinkSync(target.path);
     validateTarget(target, true);
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -234,7 +256,10 @@ export function ensurePolicyDirectory(target: PolicyFilesystemTarget): void {
   try {
     ensureDirectoryComponents(target, target.relativePath.split(sep));
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -244,7 +269,10 @@ export function removePolicyDirectory(target: PolicyFilesystemTarget): void {
     removeValidatedTree(target);
     validateTarget(target, true, 'directory');
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -254,7 +282,10 @@ export function validatePolicyDirectoryRemoval(target: PolicyFilesystemTarget): 
     validateRemovalTree(target);
     return true;
   } catch (error) {
-    throwPolicyFilesystemError(target.scope.label, error);
+    throwPolicyFilesystemError(
+      target.scope.label,
+      error instanceof Error ? error : new Error(String(error)),
+    );
   }
 }
 
@@ -262,7 +293,7 @@ function validateTarget(
   target: PolicyFilesystemTarget,
   allowMissingLeaf: boolean,
   leafType: 'file' | 'directory' = 'file',
-): { exists: boolean } {
+) {
   const canonicalRoot = getCanonicalRoot(target.scope);
   if (!canonicalRoot) return { exists: false };
   const parts = target.relativePath.split(sep);
@@ -400,18 +431,14 @@ function lstatOrMissing(path: string): ReturnType<typeof lstatSync> | null {
   try {
     return lstatSync(path);
   } catch (error) {
-    if (isNodeError(error) && error.code === 'ENOENT') return null;
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-function throwPolicyFilesystemError(label: PolicyFilesystemLabel, error: unknown): never {
+function throwPolicyFilesystemError(label: PolicyFilesystemLabel, error: Error): never {
   if (error instanceof PolicyFilesystemError) throw error;
   throw new PolicyFilesystemError(label);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && 'code' in error;
 }
 
 function closeSafely(descriptor: number): void {

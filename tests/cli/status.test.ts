@@ -112,7 +112,7 @@ describe('status command', () => {
     return lines.join('\n');
   };
 
-  const writeUserPolicy = (policy: Record<string, unknown>) =>
+  const writeUserPolicy = (policy: Parameters<typeof JSON.stringify>[0]) =>
     writeFile(join(home, 'policy.json'), JSON.stringify(policy));
 
   test('prints the facts block and no issues block when ready', async () => {

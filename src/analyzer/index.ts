@@ -27,11 +27,11 @@ export function analyzeCommandWithProgram(
     program,
   );
   if (!result) return null;
-  return {
+  const decision = {
     kind: 'deny',
     reason: result.reason,
     intent: result.intent ?? 'manual_only',
-    ...(result.ruleId ? { ruleId: result.ruleId } : {}),
     evidence: [{ kind: 'command', command, segment: result.segment }],
-  };
+  } as const;
+  return result.ruleId ? { ...decision, ruleId: result.ruleId } : decision;
 }

@@ -32,6 +32,7 @@ import { buildOpenClawBundle, buildRuntimeBundles } from '../../scripts/build-ru
 import {
   buildE2EArtifacts,
   describeHermesGates,
+  hermesDirectiveSchema,
   isolatedEnv,
   parseJsonOutput,
   readHermesDirective,
@@ -114,7 +115,9 @@ const hermesBinaryGate = {
     const directive = /parsed \(Hermes wire shape\): (.+)$/m.exec(stdout);
     if (!directive) expect(stdout).toContain('parsed: <none');
     return readHermesDirective(
-      directive?.[1] ? parseJsonOutput('Hermes dispatcher', directive[1]) : null,
+      directive?.[1]
+        ? hermesDirectiveSchema.parse(parseJsonOutput('Hermes dispatcher', directive[1]))
+        : null,
       action,
     );
   },

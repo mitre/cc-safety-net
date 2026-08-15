@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { commandSignature } from '@/engine/audit-display';
-import type { AuditLogEntry } from '@/ir/audit';
+import { type AuditLogEntry, AuditLogEntrySchema } from '@/ir/audit';
 
 export { commandSignature } from '@/engine/audit-display';
 
@@ -56,7 +56,10 @@ export function readAuditLogEntries(filePath: string, skips?: { count: number })
       .filter(Boolean)
       .flatMap((line) => {
         try {
-          return [JSON.parse(line) as AuditLogEntry];
+          const parsed = AuditLogEntrySchema.safeParse(JSON.parse(line));
+          if (parsed.success) return [parsed.data];
+          if (skips) skips.count++;
+          return [];
         } catch {
           if (skips) skips.count++;
           return [];

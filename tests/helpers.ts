@@ -9,7 +9,7 @@ import { listAuditLogFiles } from '@/engine/audit-scan';
 import { resolveProtectedGitMetadata } from '@/guards/git-metadata-protection';
 import type { VersionFetcher } from '@/integrations/system-info';
 import type { AnalyzeInput, EnvironmentContext } from '@/ir/analysis';
-import type { AuditLogEntry } from '@/ir/audit';
+import { type AuditLogEntry, AuditLogEntrySchema } from '@/ir/audit';
 import type { TraceStep } from '@/ir/command-trace';
 import type { Decision } from '@/ir/decision';
 import type { ExplainResult } from '@/ir/explain';
@@ -149,7 +149,7 @@ export function readLatestAuditLogEntry(homeDir: string, sessionId: string): Aud
   const lines = readFileSync(files[files.length - 1] ?? '', 'utf-8')
     .trim()
     .split('\n');
-  return JSON.parse(lines[lines.length - 1] ?? '{}') as AuditLogEntry;
+  return AuditLogEntrySchema.parse(JSON.parse(lines[lines.length - 1] ?? '{}'));
 }
 
 export function readAuditLogEntriesForSession(homeDir: string, sessionId: string): AuditLogEntry[] {
@@ -158,22 +158,22 @@ export function readAuditLogEntriesForSession(homeDir: string, sessionId: string
       readFileSync(file, 'utf8')
         .split('\n')
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as AuditLogEntry),
+        .map((line) => AuditLogEntrySchema.parse(JSON.parse(line))),
     )
     .filter((entry) => entry.sessionId === sessionId);
 }
 
-export function writeJsonlFixture(
+export function writeJsonlFixture<Entry extends object>(
   filePath: string,
-  entries: readonly Record<string, unknown>[],
+  entries: readonly Entry[],
 ): void {
   writeFileSync(filePath, entries.map((entry) => JSON.stringify(entry)).join('\n'));
 }
 
-export function writeNestedAuditLogFixture(
+export function writeNestedAuditLogFixture<Entry extends { ts: string; sessionId: string }>(
   logsDir: string,
   projectDir: string,
-  entry: Record<string, unknown> & { ts: string; sessionId: string },
+  entry: Entry,
 ): void {
   const date = entry.ts.slice(0, 10);
   const monthDir = join(logsDir, projectDir, date.slice(0, 7));
@@ -189,7 +189,15 @@ function setEnvValue(key: string, value: string | undefined): void {
   process.env[key] = value;
 }
 
-export function withEnv<T>(env: Record<string, string | undefined>, fn: () => T): T {
+export function withEnv<T>(
+  env: Record<string, string | undefined>,
+  fn: () => Promise<T>,
+): Promise<T>;
+export function withEnv<T>(env: Record<string, string | undefined>, fn: () => T): T;
+export function withEnv<T>(
+  env: Record<string, string | undefined>,
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
   const effectiveEnv =
     env.HOME !== undefined && env.CC_SAFETY_NET_AUDIT_HOME === undefined
       ? { ...env, CC_SAFETY_NET_AUDIT_HOME: env.HOME }
@@ -206,7 +214,7 @@ export function withEnv<T>(env: Record<string, string | undefined>, fn: () => T)
 
   try {
     const result = fn();
-    if (result instanceof Promise) return result.finally(restore) as T;
+    if (result instanceof Promise) return result.finally(restore);
     restore();
     return result;
   } catch (error) {
@@ -215,10 +223,15 @@ export function withEnv<T>(env: Record<string, string | undefined>, fn: () => T)
   }
 }
 
+interface CapturedConsoleOutput {
+  stdout: string[];
+  stderr: string[];
+}
+
 export async function captureConsoleOutput<T>(
-  fn: (output: { stdout: string[]; stderr: string[] }) => T | Promise<T>,
+  fn: (output: CapturedConsoleOutput) => T | Promise<T>,
 ) {
-  const output = { stdout: [] as string[], stderr: [] as string[] };
+  const output: CapturedConsoleOutput = { stdout: [], stderr: [] };
   const log = spyOn(console, 'log').mockImplementation((...parts: unknown[]) =>
     output.stdout.push(parts.map(String).join(' ')),
   );
@@ -288,7 +301,7 @@ export async function runCCSafetyNetCli(
   const proc = Bun.spawn([process.execPath, CLI_ENTRYPOINT, ...args], {
     stdout: 'pipe',
     stderr: 'pipe',
-    env: { ...process.env, ...(env ?? {}) },
+    env: { ...process.env, ...env },
     cwd,
   });
   const output = await new Response(proc.stdout).text();
@@ -361,22 +374,22 @@ export const mockVersionFetcher: VersionFetcher = async (args: string[]) => {
   }
 
   const cmd = args[0];
-  const mockVersions: Record<string, string> = {
-    claude: '1.0.0',
-    agy: 'Antigravity CLI v2.0.0',
-    opencode: '0.1.0',
-    codex: 'codex 1.2.0',
-    gemini: '0.20.0',
-    hermes: 'hermes 1.5.0',
-    openclaw: 'openclaw 2026.8.1',
-    kimi: 'kimi 0.3.0',
-    pi: 'pi 0.4.0',
-    copilot: 'Copilot binary version: 1.0.9',
-    node: 'v22.0.0',
-    npm: '10.0.0',
-    bun: '1.0.0',
-  };
-  return mockVersions[cmd ?? ''] ?? null;
+  const mockVersions = new Map<string, string>([
+    ['claude', '1.0.0'],
+    ['agy', 'Antigravity CLI v2.0.0'],
+    ['opencode', '0.1.0'],
+    ['codex', 'codex 1.2.0'],
+    ['gemini', '0.20.0'],
+    ['hermes', 'hermes 1.5.0'],
+    ['openclaw', 'openclaw 2026.8.1'],
+    ['kimi', 'kimi 0.3.0'],
+    ['pi', 'pi 0.4.0'],
+    ['copilot', 'Copilot binary version: 1.0.9'],
+    ['node', 'v22.0.0'],
+    ['npm', '10.0.0'],
+    ['bun', '1.0.0'],
+  ]);
+  return mockVersions.get(cmd ?? '') ?? null;
 };
 
 /**

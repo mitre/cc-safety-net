@@ -7,8 +7,8 @@ import {
   type GuardDependencies,
   type GuardEvaluation,
   GuardEvaluationError,
-  type GuardStage,
 } from '@/engine/guard';
+import type { ToolInvocation } from '@/ir/invocation';
 import { parseCommand } from '@/parser/command';
 import { getUserPolicyPath } from '@/policy/store';
 import { withTempDir } from '../helpers';
@@ -39,7 +39,7 @@ function commandInvocation(cwd: string, command: string | null = 'git status') {
   };
 }
 
-function nonCommandInvocation(cwd: string, input: unknown = { path: 'README.md' }) {
+function nonCommandInvocation(cwd: string, input: ToolInvocation['input'] = { path: 'README.md' }) {
   return {
     toolName: 'Read',
     input,
@@ -78,17 +78,21 @@ function dependencies(
 
 const strictModes = () => testModes('strict');
 
-function captureGuardError(run: () => unknown): GuardEvaluationError {
+function captureGuardError(run: () => void): GuardEvaluationError {
   try {
     run();
   } catch (error) {
     expect(error).toBeInstanceOf(GuardEvaluationError);
-    return error as GuardEvaluationError;
+    if (error instanceof GuardEvaluationError) return error;
+    throw error;
   }
   throw new Error('Expected guard evaluation to throw');
 }
 
-function captureNonCommandGuardError(cwd: string, input: unknown): GuardEvaluationError {
+function captureNonCommandGuardError(
+  cwd: string,
+  input: ToolInvocation['input'],
+): GuardEvaluationError {
   return captureGuardError(() => evaluateGuard(nonCommandInvocation(cwd, input)));
 }
 
@@ -99,8 +103,10 @@ function fallbackLimitPatch(marker: string): string {
 
 function expectNonReflectiveToolInputLimit(error: GuardEvaluationError, marker: string): void {
   expect(error.stage).toBe('policy-protection');
-  expect((error.cause as Error).constructor.name).toBe('ToolInputLimitError');
-  expect((error.cause as Error).message).toBe('tool input traversal limit exceeded');
+  expect(error.cause).toBeInstanceOf(Error);
+  if (!(error.cause instanceof Error)) throw error.cause;
+  expect(error.cause.constructor.name).toBe('ToolInputLimitError');
+  expect(error.cause.message).toBe('tool input traversal limit exceeded');
   expect(error.evaluation.decision).toEqual(
     expect.objectContaining({ kind: 'deny', intent: 'stop_and_explain', evidence: [] }),
   );
@@ -233,7 +239,8 @@ describe('guard evaluation', () => {
 
   test('fails closed before policy evaluation when recursive tool input exceeds traversal bounds', async () => {
     await withTempDir('cc-safety-net-guard-input-bounds-', (cwd) => {
-      const input: Record<string, unknown> = {};
+      type RecursiveToolInput = { cycle?: RecursiveToolInput };
+      const input: RecursiveToolInput = {};
       input.cycle = input;
       const error = captureNonCommandGuardError(cwd, input);
 
@@ -646,7 +653,7 @@ describe('guard evaluation', () => {
         }),
       );
 
-      expect(error.stage).toBe(stage as GuardStage);
+      expect(error.stage).toBe(stage);
       expect(error.cause).toBe(cause);
       expect(error.evaluation).toEqual({
         stage,

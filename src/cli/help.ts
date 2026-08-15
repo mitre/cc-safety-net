@@ -4,7 +4,7 @@ import { findCommand, getVisibleCommands } from './commands';
 
 declare const __PKG_VERSION__: string | undefined;
 
-const version = typeof __PKG_VERSION__ !== 'undefined' ? __PKG_VERSION__ : 'dev';
+const version = import.meta.filename.endsWith('.ts') ? 'dev' : __PKG_VERSION__;
 
 const INDENT = '  ';
 const PROGRAM_NAME = 'cc-safety-net';

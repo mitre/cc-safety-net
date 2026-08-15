@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { evaluateGuard } from '@/engine/guard';
-import type { ToolInvocation } from '@/ir/invocation';
+import { createToolInvocation, type ToolInvocation } from '@/ir/invocation';
+import { getCommandFromToolInput, type ToolInputValue } from '@/parser/tool-input';
 import { getUserPolicyPath } from '@/policy/store';
 import { analyzeTestCommand, policySnapshot, type TestPolicyInput } from '../helpers/policy.ts';
 import { createLinkedWorktreeFixture, createSubmoduleLikeGitFileFixture } from '../helpers.ts';
@@ -29,22 +30,18 @@ function commandRule(
 
 function guard(
   toolName: string,
-  input: unknown,
+  input: ToolInputValue,
   cwd: string,
   route: ToolInvocation['route'],
   snapshot = policySnapshot(),
 ) {
-  const invocation =
-    route.kind === 'command'
-      ? {
-          toolName,
-          input,
-          context: { configCwd: cwd, executionCwd: cwd },
-          route,
-          command:
-            input && typeof input === 'object' && 'command' in input ? String(input.command) : null,
-        }
-      : { toolName, input, context: { configCwd: cwd, executionCwd: cwd }, route };
+  const invocation = createToolInvocation(
+    toolName,
+    input,
+    route,
+    { configCwd: cwd, executionCwd: cwd },
+    getCommandFromToolInput(input) ?? null,
+  );
   return evaluateGuard(invocation, {
     dependencies: { loadPolicySnapshot: () => snapshot },
   });

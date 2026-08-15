@@ -1,9 +1,16 @@
 import { resolve } from 'node:path';
-import { collectCustomRuleNames, formatSchemaIssues, getLegacyConfigSchema } from '@/policy/schema';
+import { z } from 'zod';
+import type { CustomRule } from '@/ir/policy';
+import {
+  collectCustomRuleNames,
+  formatSchemaIssues,
+  getLegacyConfigSchema,
+  type UnparsedValue,
+} from '@/policy/schema';
 import { validateRulesConfig } from './policy/config-file';
 import {
   bindDelegatedPolicyFilesystemTarget,
-  PolicyFilesystemError,
+  isPolicyFilesystemTarget,
   type PolicyFilesystemTarget,
   readPolicyFile,
 } from './policy/filesystem';
@@ -16,10 +23,21 @@ export interface ValidationResult {
   ruleNames: Set<string>;
 }
 
-export function validateConfig(config: unknown): ValidationResult {
+type LegacyRulesConfigResult =
+  | { ok: true; config: { version: 1; rules: CustomRule[] } }
+  | { ok: false; errors: string[] };
+
+export function parseLegacyRulesConfig(config: UnparsedValue): LegacyRulesConfigResult {
   const parsed = getLegacyConfigSchema().safeParse(config);
+  if (!parsed.success) return { ok: false, errors: formatSchemaIssues(parsed.error.issues) };
+  return { ok: true, config: { version: 1, rules: parsed.data.rules ?? [] } };
+}
+
+/** @internal */
+export function validateConfig(config: UnparsedValue): ValidationResult {
+  const parsed = parseLegacyRulesConfig(config);
   return {
-    errors: parsed.success ? [] : formatSchemaIssues(parsed.error.issues),
+    errors: parsed.ok ? [] : parsed.errors,
     ruleNames: new Set(collectCustomRuleNames(config).map((name) => name.toLowerCase())),
   };
 }
@@ -33,32 +51,37 @@ export function validateConfigFile(path: string | PolicyFilesystemTarget): Valid
 type ConfigFileInput = { ok: true; parsed: unknown } | { ok: false; result: ValidationResult };
 
 function readConfigFileInput(path: string | PolicyFilesystemTarget): ConfigFileInput {
-  const errors: string[] = [];
-  const ruleNames = new Set<string>();
-
   try {
-    const target = typeof path === 'string' ? bindDelegatedPolicyFilesystemTarget(path) : path;
-    const content = readPolicyFile(target);
-    if (content === null) {
-      errors.push(`File not found: ${target.path}`);
-      return { ok: false, result: { errors, ruleNames } };
-    }
-    if (!content.trim()) {
-      errors.push('Config file is empty');
-      return { ok: false, result: { errors, ruleNames } };
-    }
-
-    return { ok: true, parsed: JSON.parse(content) as unknown };
+    return readConfigFileTarget(
+      isPolicyFilesystemTarget(path) ? path : bindDelegatedPolicyFilesystemTarget(path),
+    );
   } catch (error) {
-    if (error instanceof PolicyFilesystemError) {
-      errors.push(error.message);
-      return { ok: false, result: { errors, ruleNames } };
-    }
     // Only a parse failure means malformed JSON; every other failure names itself.
     const message = error instanceof Error ? error.message : String(error);
-    errors.push(error instanceof SyntaxError ? 'Invalid JSON' : message);
-    return { ok: false, result: { errors, ruleNames } };
+    return configFileFailure(error instanceof SyntaxError ? 'Invalid JSON' : message);
   }
+}
+
+function readConfigFileTarget(target: PolicyFilesystemTarget): ConfigFileInput {
+  try {
+    const content = readPolicyFile(target);
+    if (content === null) {
+      return configFileFailure(`File not found: ${target.path}`);
+    }
+    if (!content.trim()) {
+      return configFileFailure('Config file is empty');
+    }
+
+    return { ok: true, parsed: z.json().parse(JSON.parse(content)) };
+  } catch (error) {
+    // Only a parse failure means malformed JSON; every other failure names itself.
+    const message = error instanceof Error ? error.message : String(error);
+    return configFileFailure(error instanceof SyntaxError ? 'Invalid JSON' : message);
+  }
+}
+
+function configFileFailure(message: string): ConfigFileInput {
+  return { ok: false, result: { errors: [message], ruleNames: new Set() } };
 }
 
 export function getLegacyProjectConfigPath(cwd?: string): string {

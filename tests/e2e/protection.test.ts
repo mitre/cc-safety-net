@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as schema from 'zod';
 import { buildRuntimeBundles } from '../../scripts/build-runtime';
 import { OPENCODE_HOST_SCRIPT, PI_HOST_SCRIPT } from '../../scripts/integration-host-scripts';
+import type { JsonValue } from '../../src/policy/store';
 import { readAuditLogEntriesForSession } from '../helpers';
 import {
   buildE2EArtifacts,
@@ -14,6 +16,35 @@ import {
   type SafetyLevel,
   withWorkspace,
 } from './harness';
+
+type ParsedJson = ReturnType<typeof parseJsonOutput>;
+
+const integrationHostResultSchema = schema.object({
+  result: schema
+    .object({ block: schema.literal(true), reason: schema.string() })
+    .nullable()
+    .optional(),
+  allowed: schema.boolean().optional(),
+  reason: schema.string().optional(),
+  eventNames: schema.array(schema.string()).optional(),
+  commandNames: schema.array(schema.string()).optional(),
+  commandDescription: schema.string().optional(),
+  sentMessages: schema
+    .array(
+      schema.object({
+        content: schema.string(),
+        options: schema.object({ deliverAs: schema.string() }),
+      }),
+    )
+    .optional(),
+  exportNames: schema.array(schema.string()).optional(),
+  pluginCount: schema.number().optional(),
+  existingCommand: schema
+    .object({ description: schema.string(), template: schema.string() })
+    .optional(),
+});
+
+type IntegrationHostResult = schema.infer<typeof integrationHostResultSchema>;
 
 const adapters = [
   {
@@ -39,7 +70,7 @@ const adapters = [
       tool_name: 'run_shell_command',
       tool_input: { command },
     }),
-    denyReason: (output: Record<string, unknown>) => {
+    denyReason: (output: ParsedJson) => {
       expect(output.decision).toBe('deny');
       return String(output.reason);
     },
@@ -67,7 +98,7 @@ const adapters = [
       toolName: 'bash',
       toolArgs: JSON.stringify({ command }),
     }),
-    denyReason: (output: Record<string, unknown>) => {
+    denyReason: (output: ParsedJson) => {
       expect(output.permissionDecision).toBe('deny');
       return String(output.permissionDecisionReason);
     },
@@ -83,7 +114,7 @@ const adapters = [
       conversationId: sessionId,
       workspacePaths: [cwd],
     }),
-    denyReason: (output: Record<string, unknown>) => {
+    denyReason: (output: ParsedJson) => {
       expect(output.decision).toBe('deny');
       return String(output.reason);
     },
@@ -101,8 +132,8 @@ const adapters = [
     }),
     // Cursor is the one adapter that emits a decision on allow too, so silence
     // cannot stand in for permission the way it does for the others.
-    isAllowOutput: (output: Record<string, unknown>) => output.permission === 'allow',
-    denyReason: (output: Record<string, unknown>) => {
+    isAllowOutput: (output: ParsedJson) => output.permission === 'allow',
+    denyReason: (output: ParsedJson) => {
       expect(output.permission).toBe('deny');
       return String(output.user_message);
     },
@@ -485,7 +516,7 @@ describe('built Pi extension protection contract', () => {
       const resetSession = 'pi-reset';
       const resetSentinel = join(cwd, 'pi-reset-sentinel');
       writeFileSync(resetSentinel, 'preserve');
-      const results = (
+      const results = integrationHostResults(
         await runBuiltHost(
           piPath,
           PI_HOST_SCRIPT,
@@ -504,8 +535,8 @@ describe('built Pi extension protection contract', () => {
           ],
           cwd,
           home,
-        )
-      ).results as Record<string, unknown>[];
+        ),
+      );
 
       expect(results).toHaveLength(7);
       expect(hostResult(results, 0)).toMatchObject({
@@ -557,7 +588,7 @@ describe('built OpenCode plugin protection contract', () => {
       const resetSession = 'opencode-reset';
       const resetSentinel = join(cwd, 'opencode-reset-sentinel');
       writeFileSync(resetSentinel, 'preserve');
-      const results = (
+      const results = integrationHostResults(
         await runBuiltHost(
           openCodePath,
           OPENCODE_HOST_SCRIPT,
@@ -610,8 +641,8 @@ describe('built OpenCode plugin protection contract', () => {
           ],
           cwd,
           home,
-        )
-      ).results as Record<string, unknown>[];
+        ),
+      );
 
       expect(results).toHaveLength(9);
       expect(hostResult(results, 0)).toMatchObject({
@@ -744,7 +775,7 @@ function policyMutation(
 
 async function runGated(
   adapter: (typeof adapters)[number],
-  input: unknown,
+  input: JsonValue,
   cwd: string,
   home: string,
   action: () => void,
@@ -761,7 +792,7 @@ async function runGated(
 
 function runCodingCliTool(
   toolName: string,
-  toolInput: unknown,
+  toolInput: JsonValue,
   cwd: string,
   home: string,
   sessionId: string,
@@ -787,7 +818,7 @@ function runCodingCliTool(
 
 async function runBuiltHook(
   flag: string,
-  input: unknown,
+  input: JsonValue,
   cwd: string,
   home: string,
   level?: SafetyLevel,
@@ -797,7 +828,11 @@ async function runBuiltHook(
 
 type IntegrationGateResult = { allowed: true } | { allowed: false; reason: string };
 
-function hostResult(results: Record<string, unknown>[], index: number) {
+function integrationHostResults(output: ParsedJson) {
+  return schema.array(integrationHostResultSchema).parse(output.results);
+}
+
+function hostResult(results: IntegrationHostResult[], index: number) {
   const result = results[index];
   if (!result) throw new Error(`Missing integration host result ${index}`);
   return result;
@@ -809,7 +844,7 @@ function expectDeniedReason(result: IntegrationGateResult) {
   return result.reason;
 }
 
-function piToolRequest(toolName: string, input: Record<string, unknown>, sessionId: string) {
+function piToolRequest(toolName: string, input: JsonValue, sessionId: string) {
   return {
     kind: 'tool_call',
     event: { type: 'tool_call', toolCallId: `${sessionId}-call`, toolName, input },
@@ -817,27 +852,30 @@ function piToolRequest(toolName: string, input: Record<string, unknown>, session
   };
 }
 
-function applyPiHostResult(output: Record<string, unknown>, action: () => void) {
-  const result = output.result as { block: true; reason: string } | null;
-  if (result?.block) return { allowed: false, reason: result.reason } as const;
+function applyPiHostResult(output: IntegrationHostResult, action: () => void) {
+  if (output.result?.block) {
+    return { allowed: false, reason: output.result.reason } as const;
+  }
   action();
   return { allowed: true } as const;
 }
 
-function openCodeToolRequest(tool: string, args: Record<string, unknown>, sessionId: string) {
+function openCodeToolRequest(tool: string, args: JsonValue, sessionId: string) {
   return { kind: 'tool', tool, args, sessionId };
 }
 
-function applyOpenCodeHostResult(output: Record<string, unknown>, action: () => void) {
-  if (!output.allowed) return { allowed: false, reason: String(output.reason) } as const;
+function applyOpenCodeHostResult(output: IntegrationHostResult, action: () => void) {
+  if (!output.allowed) {
+    return { allowed: false, reason: String(output.reason) } as const;
+  }
   action();
   return { allowed: true } as const;
 }
 
 function expectSecretReadBlocked(
   agent: 'pi' | 'opencode',
-  result: Record<string, unknown>,
-  apply: (output: Record<string, unknown>, action: () => void) => IntegrationGateResult,
+  result: IntegrationHostResult,
+  apply: (output: IntegrationHostResult, action: () => void) => IntegrationGateResult,
   cwd: string,
   home: string,
 ) {
@@ -854,10 +892,10 @@ function expectSecretReadBlocked(
 }
 
 function expectPublicReadsAllowed(
-  apply: (output: Record<string, unknown>, action: () => void) => IntegrationGateResult,
+  apply: (output: IntegrationHostResult, action: () => void) => IntegrationGateResult,
   cwd: string,
   home: string,
-  cases: readonly (readonly [Record<string, unknown>, string, string, string])[],
+  cases: readonly (readonly [IntegrationHostResult, string, string, string])[],
 ) {
   for (const [result, sessionId, filePath, expected] of cases) {
     const reads: string[] = [];
@@ -869,8 +907,14 @@ function expectPublicReadsAllowed(
   }
 }
 
-function getClaudeStyleDenyReason(output: Record<string, unknown>) {
-  const hookOutput = output.hookSpecificOutput as Record<string, unknown>;
+function getClaudeStyleDenyReason(output: ParsedJson) {
+  const hookOutput = schema
+    .object({
+      hookEventName: schema.string(),
+      permissionDecision: schema.string(),
+      permissionDecisionReason: schema.string(),
+    })
+    .parse(output.hookSpecificOutput);
   expect(hookOutput.hookEventName).toBe('PreToolUse');
   expect(hookOutput.permissionDecision).toBe('deny');
   return String(hookOutput.permissionDecisionReason);

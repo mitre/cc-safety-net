@@ -3,26 +3,34 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { z } from 'zod';
 import { CURSOR_HOOK_COMMAND, getCursorHooksPath } from '@/integrations/cursor/install';
 import type { DetectContext, HookDetection } from '@/integrations/detect/context';
 
-function _findCursorManagedEntries(config: unknown): Array<Record<string, unknown>> {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return [];
-  const hooks = (config as Record<string, unknown>).hooks;
-  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return [];
-  const preToolUse = (hooks as Record<string, unknown>).preToolUse;
-  if (!Array.isArray(preToolUse)) return [];
+const cursorDetectionEntrySchema = z.looseObject({
+  command: z.json().optional(),
+  failClosed: z.json().optional(),
+  timeout: z.json().optional(),
+});
+const cursorDetectionConfigSchema = z.looseObject({
+  hooks: z
+    .looseObject({
+      preToolUse: z.array(z.json()).optional(),
+    })
+    .optional(),
+});
+type CursorDetectionEntry = z.infer<typeof cursorDetectionEntrySchema>;
 
-  return preToolUse.filter(
-    (entry): entry is Record<string, unknown> =>
-      !!entry &&
-      typeof entry === 'object' &&
-      !Array.isArray(entry) &&
-      (entry as Record<string, unknown>).command === CURSOR_HOOK_COMMAND,
-  );
+function _findCursorManagedEntries(config: z.infer<typeof cursorDetectionConfigSchema>) {
+  const preToolUse = config.hooks?.preToolUse ?? [];
+
+  return preToolUse.flatMap((entry) => {
+    const parsed = cursorDetectionEntrySchema.safeParse(entry);
+    return parsed.success && parsed.data.command === CURSOR_HOOK_COMMAND ? [parsed.data] : [];
+  });
 }
 
-function _cursorDriftErrors(entries: Array<Record<string, unknown>>): string[] {
+function _cursorDriftErrors(entries: CursorDetectionEntry[]): string[] {
   const errors: string[] = [];
   if (entries.length > 1) {
     errors.push('Multiple managed cc-safety-net hooks found; reinstall to collapse duplicates');
@@ -44,9 +52,9 @@ export function detect(context: DetectContext): HookDetection {
     return { platform: 'cursor', status: 'n/a', configPath };
   }
 
-  let parsed: unknown;
+  let parsed: z.infer<typeof cursorDetectionConfigSchema>;
   try {
-    parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+    parsed = cursorDetectionConfigSchema.parse(JSON.parse(readFileSync(configPath, 'utf-8')));
   } catch (e) {
     return {
       platform: 'cursor',

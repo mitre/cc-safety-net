@@ -1,4 +1,4 @@
-import { detectClaudeShapeAgent } from '@/integrations/hook/agent-detection';
+import { detectClaudeCompatibleAgent } from '@/integrations/hook/agent-detection';
 import {
   getToolRoute,
   resolveStandardHookContext,
@@ -18,7 +18,6 @@ interface HookInput {
   tool_input?: {
     command?: string;
     description?: string;
-    [key: string]: unknown;
   };
   tool_use_id?: string;
 }
@@ -45,7 +44,7 @@ export function getClaudeCodeToolRoute(toolName: string) {
 export async function runClaudeCodeHook(): Promise<void> {
   await runConfiguredHookAdapter<HookInput>({
     agent: 'claude-code',
-    getAgent: (input) => detectClaudeShapeAgent(input.transcript_path),
+    getAgent: (input) => detectClaudeCompatibleAgent(input.transcript_path),
     createDenyOutput: (message): HookOutput => ({
       hookSpecificOutput: {
         hookEventName: CLAUDE_CODE_HOOK_EVENT,

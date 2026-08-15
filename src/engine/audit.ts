@@ -8,7 +8,12 @@ export { redactSecrets } from '@/engine/sanitize';
 import { pruneExpiredAuditLogs } from '@/engine/audit-retention';
 import { redactSecrets } from '@/engine/sanitize';
 
-import type { AuditErrorCode, AuditFailureStage, AuditLogEntry } from '@/ir/audit';
+import {
+  AUDIT_FORMAT_KEY,
+  type AuditErrorCode,
+  type AuditFailureStage,
+  type AuditLogEntry,
+} from '@/ir/audit';
 import type { BlockIntent } from '@/ir/decision';
 import type { EffectiveSafetyLevel } from '@/ir/policy';
 
@@ -16,7 +21,7 @@ type AuditLogDecision = 'allow' | 'deny';
 
 declare const __PKG_VERSION__: string | undefined;
 
-const AUDIT_LOG_VERSION = typeof __PKG_VERSION__ !== 'undefined' ? __PKG_VERSION__ : 'dev';
+const AUDIT_LOG_VERSION = readAuditLogVersion();
 const COMMAND_MAX_LENGTH = 10_000;
 const SEGMENT_MAX_LENGTH = 2_000;
 const TOOL_NAME_MAX_LENGTH = 256;
@@ -66,7 +71,7 @@ export function writeAuditLog(
     homeDir?: string;
     decision?: AuditLogDecision;
     agent?: string;
-    shape?: string;
+    [AUDIT_FORMAT_KEY]?: string;
     level?: EffectiveSafetyLevel;
     configFallback?: true;
     toolName?: string;
@@ -115,18 +120,12 @@ export function writeAuditLog(
       sessionId: safeSessionId,
       decision: options.decision ?? 'deny',
       agent: options.agent,
-      shape: options.shape,
+      [AUDIT_FORMAT_KEY]: options[AUDIT_FORMAT_KEY],
       level: options.level,
       configFallback: options.configFallback,
       toolName: cappedToolName?.value,
       command: cappedCommand.value,
       segment: cappedSegment.value,
-      ...(cappedCommand.truncated ||
-      cappedSegment.truncated ||
-      cappedToolName?.truncated ||
-      cappedCwd?.truncated
-        ? { truncated: true }
-        : {}),
       reason,
       ruleId: options.ruleId,
       intent: options.intent,
@@ -134,6 +133,14 @@ export function writeAuditLog(
       errorCode: options.errorCode,
       cwd: cappedCwd?.value ?? null,
     };
+    if (
+      cappedCommand.truncated ||
+      cappedSegment.truncated ||
+      cappedToolName?.truncated ||
+      cappedCwd?.truncated
+    ) {
+      entry.truncated = true;
+    }
 
     appendFileSync(logFile, `${JSON.stringify(entry)}\n`, { encoding: 'utf-8', mode: 0o600 });
     // Retention runs after the append so a pruning failure can never cost the
@@ -141,6 +148,14 @@ export function writeAuditLog(
     pruneExpiredAuditLogs(logsDir, options.now);
   } catch {
     // Silently ignore errors (matches Python behavior)
+  }
+}
+
+function readAuditLogVersion(): string {
+  try {
+    return __PKG_VERSION__ ?? 'dev';
+  } catch {
+    return 'dev';
   }
 }
 

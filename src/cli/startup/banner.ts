@@ -39,7 +39,7 @@ export async function awaitWithSpinner<T>(
       settled = true;
       return value;
     },
-    (error: unknown) => {
+    (error: Error) => {
       settled = true;
       throw error;
     },

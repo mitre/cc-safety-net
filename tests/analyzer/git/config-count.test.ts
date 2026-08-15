@@ -33,7 +33,7 @@ function configEnv(
 }
 
 function expectAliasConfigBlock(command: string, environment?: EnvironmentContext) {
-  expect(analyzeTestCommand(command, { ...(environment ? { environment } : {}) })).toMatchObject({
+  expect(analyzeTestCommand(command, environment ? { environment } : {})).toMatchObject({
     ruleId: 'git.alias-config',
     reason: aliasConfigReason,
   });

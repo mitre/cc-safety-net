@@ -3,19 +3,24 @@
  */
 
 import { join } from 'node:path';
+import { z } from 'zod';
 import {
   type DetectContext,
   type HookDetection,
-  readRecord,
   readStateFile,
 } from '@/integrations/detect/context';
+
+const piPackageSchema = z.union([
+  z.string().transform((source) => ({ source, extensions: undefined })),
+  z.object({ source: z.string(), extensions: z.array(z.string()).optional() }),
+]);
+const piSettingsSchema = z.object({ packages: z.array(z.json()) });
 
 export function getPiSettingsPath(homeDir: string): string {
   return join(homeDir, '.pi', 'agent', 'settings.json');
 }
 
-export function isPiSafetyNetPackageSource(source: unknown): source is string {
-  if (typeof source !== 'string') return false;
+export function isPiSafetyNetPackageSource(source: string): boolean {
   return source === 'npm:cc-safety-net' || source.startsWith('npm:cc-safety-net@');
 }
 
@@ -29,20 +34,18 @@ export function detect(context: DetectContext): HookDetection {
   if (settings.kind === 'unreadable') return { platform: 'pi', status: 'not-inspected' };
   if (settings.kind === 'missing') return { platform: 'pi', status: 'n/a' };
 
-  const packages = readRecord(settings.value, 'packages');
-  if (!Array.isArray(packages)) return { platform: 'pi', status: 'n/a' };
+  const packageRecords = piSettingsSchema.safeParse(settings.value).data?.packages;
+  if (!packageRecords) return { platform: 'pi', status: 'n/a' };
 
-  const entry = packages.find((candidate) =>
-    isPiSafetyNetPackageSource(
-      typeof candidate === 'string' ? candidate : readRecord(candidate, 'source'),
-    ),
-  );
+  const packages = packageRecords.flatMap((candidate) => {
+    const parsed = piPackageSchema.safeParse(candidate);
+    return parsed.success ? [parsed.data] : [];
+  });
+
+  const entry = packages.find((candidate) => isPiSafetyNetPackageSource(candidate.source));
   if (entry === undefined) return { platform: 'pi', status: 'n/a' };
 
-  const extensions = readRecord(entry, 'extensions');
-  const disabled =
-    Array.isArray(extensions) &&
-    extensions.some((resource) => typeof resource === 'string' && resource.startsWith('-'));
+  const disabled = entry.extensions?.some((resource) => resource.startsWith('-')) ?? false;
 
   if (disabled) {
     return {

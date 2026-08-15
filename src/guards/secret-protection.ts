@@ -20,6 +20,7 @@ import type { SecretProtectionConfig } from '@/ir/policy';
 import type { SemanticFactStore, SemanticFacts, ShellSyntaxFacts } from '@/ir/semantic-facts';
 import { getShellCommandString } from '@/parser/shell';
 import { advanceQuoteScanState } from '@/parser/shell/shared';
+import type { ToolInputValue } from '@/parser/tool-input';
 import {
   SECRET_BASENAME_RULES,
   SECRET_BROAD_SSH_KEY_BASENAME_RULE,
@@ -277,7 +278,7 @@ export function findSensitiveTargetInCommand(
 
 /** @internal */
 export function findSensitiveTargetInToolInput(
-  input: unknown,
+  input: ToolInputValue,
   route: ToolRoute,
   executionCwd = process.cwd(),
   config?: SecretProtectionConfig,
@@ -704,7 +705,7 @@ function extractFindCommandTargets(
   const expressionIndex = tokens.findIndex(
     (token) => token.startsWith('-') || token === '(' || token === '!' || token === ';',
   );
-  const targets = [...tokens.slice(0, expressionIndex === -1 ? tokens.length : expressionIndex)];
+  const targets = tokens.slice(0, expressionIndex === -1 ? tokens.length : expressionIndex);
   for (let i = 0; i < tokens.length; i++) {
     if (!FIND_EXEC_PRIMARIES.has(tokens[i] ?? '')) continue;
     const execTokens = tokens.slice(i + 1);
@@ -1150,7 +1151,7 @@ function stripLeadingWrappersAndEnvAssignments(tokens: readonly string[]): strin
   const firstCommandIndex = tokens.findIndex(
     (token) => !isWrapperToken(token) && !/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token),
   );
-  return firstCommandIndex === -1 ? [] : [...tokens.slice(firstCommandIndex)];
+  return firstCommandIndex === -1 ? [] : tokens.slice(firstCommandIndex);
 }
 
 function isWrapperToken(token: string): boolean {
@@ -1621,8 +1622,8 @@ function comparable(value: string): string {
 
 function isSecretRuleEnabled(id: string, config: SecretProtectionPolicy | undefined): boolean {
   if (!config?.disabledRules) return true;
-  if (Array.isArray(config.disabledRules)) return !config.disabledRules.includes(id);
-  return !(config.disabledRules as ReadonlySet<string>).has(id);
+  if ('has' in config.disabledRules) return !config.disabledRules.has(id);
+  return !config.disabledRules.includes(id);
 }
 
 function normalizeCandidatePath(

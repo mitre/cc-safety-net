@@ -119,9 +119,10 @@ describe('isTmpdirOverriddenToNonTemp', () => {
 
   test('does not trust the macOS per-user temporary directory shape outside Darwin', () => {
     expect(
-      evaluateInFreshProcess('/var/folders/ab/cdef123456/T', {
-        ...(process.platform === 'darwin' ? { platform: 'linux' } : {}),
-      }),
+      evaluateInFreshProcess(
+        '/var/folders/ab/cdef123456/T',
+        process.platform === 'darwin' ? { platform: 'linux' } : {},
+      ),
     ).toBe(true);
   });
 

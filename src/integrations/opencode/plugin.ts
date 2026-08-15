@@ -1,6 +1,7 @@
 import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Plugin, PluginInput } from '@opencode-ai/plugin';
+import type { Config, Plugin, PluginInput } from '@opencode-ai/plugin';
+import { z } from 'zod';
 import { writeIntegrationDenialAudit } from '@/integrations/audit';
 import {
   createFailedClosedDenial,
@@ -14,25 +15,39 @@ import * as invocationDomain from '@/ir/invocation';
 import * as toolRouting from '@/parser/tool-input';
 import { shouldRecordAllowedCommands } from '@/policy/env';
 
-type CCSafetyNetPluginInput = PluginInput & {
+type CCSafetyNetPluginInput = Pick<PluginInput, 'directory'> & {
   homeDir?: string;
 };
 
 const POWERSHELL_EXECUTABLES = new Set(['powershell', 'pwsh']);
 const POSIX_EXECUTABLES = new Set(['bash', 'dash', 'ksh', 'sh', 'zsh']);
+const pluginToolInputSchema = z.json();
+const pluginToolEventSchema = z.object({
+  tool: z.string().trim().min(1),
+  sessionID: z.string().optional(),
+});
+const pluginSessionSchema = z.object({ sessionID: z.string().optional() });
+const pluginWorkdirSchema = z.looseObject({ workdir: z.string().trim().min(1).optional() });
+const configuredShellSchema = z
+  .looseObject({ shell: z.string().optional().catch(undefined) })
+  .optional()
+  .transform((value) => value?.shell);
+
+type PluginToolInput = z.infer<typeof pluginToolInputSchema>;
+type ConfiguredShellPayload = string | number | boolean | null | undefined;
 
 export function createCCSafetyNetPlugin(
   guardDependencies: Partial<guardEngine.GuardDependencies> = {},
 ) {
   return (async ({ directory, homeDir }: CCSafetyNetPluginInput) => {
     const configCwd = resolve(directory);
-    let currentConfig: Record<string, unknown> | undefined;
+    let currentConfig: Config | undefined;
 
     return {
-      config: async (opencodeConfig: Record<string, unknown>) => {
+      config: async (opencodeConfig: Config) => {
         currentConfig = opencodeConfig;
         const builtinCommands = loadBuiltinCommands();
-        const existingCommands = (opencodeConfig.command as Record<string, unknown>) ?? {};
+        const existingCommands = opencodeConfig.command ?? {};
 
         opencodeConfig.command = {
           ...builtinCommands,
@@ -41,12 +56,14 @@ export function createCCSafetyNetPlugin(
       },
 
       'tool.execute.before': async (input, output) => {
+        const parsedInput = pluginToolEventSchema.safeParse(input);
+        const sessionID = pluginSessionSchema.safeParse(input).data?.sessionID;
         const throwPreflightDenial = (
           denial: IntegrationDenial,
           toolName?: string,
           cwd: string | null = configCwd,
         ): never => {
-          writeIntegrationDenialAudit(denial, () => input.sessionID, {
+          writeIntegrationDenialAudit(denial, () => sessionID, {
             agent: 'opencode',
             toolName,
             cwd,
@@ -54,30 +71,35 @@ export function createCCSafetyNetPlugin(
           });
           throwBlocked(denial);
         };
-        if (typeof input.tool !== 'string' || input.tool.trim() === '') {
+        if (!parsedInput.success) {
           throwPreflightDenial(createFailedClosedDenial());
         }
+        const event = pluginToolEventSchema.parse(input);
 
-        const toolInput = output.args;
+        const parsedToolInput = pluginToolInputSchema.safeParse(output.args);
+        if (!parsedToolInput.success) {
+          throwPreflightDenial(createFailedClosedDenial({ toolName: event.tool }));
+        }
+        const toolInput = pluginToolInputSchema.parse(output.args);
         let command: string | undefined;
         try {
           command = toolRouting.getCommandFromToolInput(toolInput);
         } catch (error) {
           if (!(error instanceof toolRouting.ToolInputLimitError)) throw error;
-          throwPreflightDenial(createFailedClosedDenial({ toolName: input.tool }), input.tool);
+          throwPreflightDenial(createFailedClosedDenial({ toolName: event.tool }), event.tool);
         }
-        const shellRoute = resolveOpenCodeShellRoute(currentConfig?.shell);
-        const route = getOpenCodeToolRoute(input.tool, shellRoute);
+        const shellRoute = resolveOpenCodeShellRoute(configuredShellSchema.parse(currentConfig));
+        const route = getOpenCodeToolRoute(event.tool, shellRoute);
         const executionCwd = resolveOpenCodeExecutionCwd(configCwd, toolInput);
         if (!isUsableDirectory(configCwd) || !executionCwd) {
           return throwPreflightDenial(
-            createFailedClosedDenial({ command, toolName: input.tool }),
-            input.tool,
+            createFailedClosedDenial({ command, toolName: event.tool }),
+            event.tool,
           );
         }
         const context: invocationDomain.ToolCallContext = { configCwd, executionCwd };
         const invocation = invocationDomain.createToolInvocation(
-          input.tool,
+          event.tool,
           toolInput,
           route,
           context,
@@ -89,7 +111,7 @@ export function createCCSafetyNetPlugin(
             audit: {
               agent: 'opencode',
               homeDir,
-              getSessionId: () => input.sessionID,
+              getSessionId: () => event.sessionID,
             },
           });
           throwGuardDenial(evaluation, evaluation.stage !== 'config-state');
@@ -112,10 +134,11 @@ export function createCCSafetyNetPlugin(
 
 /** @internal */
 export function resolveOpenCodeShellRoute(
-  configuredShell: unknown,
+  configuredShell: ConfiguredShellPayload,
 ): invocationDomain.CommandToolKind {
-  if (typeof configuredShell !== 'string') return 'auto';
-  const executable = configuredShell
+  const shell = z.string().optional().catch(undefined).parse(configuredShell);
+  if (!shell) return 'auto';
+  const executable = shell
     .trim()
     .split(/[\\/]/)
     .at(-1)
@@ -135,12 +158,11 @@ function getOpenCodeToolRoute(
   return { kind: toolRouting.getNonCommandToolInputKind(toolName) };
 }
 
-function resolveOpenCodeExecutionCwd(configCwd: string, toolInput: unknown): string | null {
-  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return configCwd;
-  if (!Object.hasOwn(toolInput, 'workdir')) return configCwd;
-
-  const workdir = (toolInput as Record<string, unknown>).workdir;
-  if (typeof workdir !== 'string' || workdir.trim() === '') return null;
+function resolveOpenCodeExecutionCwd(configCwd: string, toolInput: PluginToolInput): string | null {
+  const parsed = pluginWorkdirSchema.safeParse(toolInput);
+  if (!parsed.success) return null;
+  const workdir = parsed.data.workdir;
+  if (!workdir) return configCwd;
   const resolvedWorkdir =
     process.platform === 'win32' ? normalizeOpenCodeWindowsWorkdir(workdir) : workdir;
   if (!resolvedWorkdir) return null;

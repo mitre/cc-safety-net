@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 export const RULEBOOK_LIMIT_ERROR = "Rulebook exceeds CC Safety Net's safe validation limits.";
 export const RULEBOOK_VALIDATION_TRUNCATED = 'Additional rulebook validation errors were omitted.';
 
@@ -13,7 +15,35 @@ export const RULEBOOK_LIMITS = Object.freeze({
   maxValidationErrors: 64,
 });
 
-export function isRulebookWithinAcceptanceLimits(rulebook: Record<string, unknown>): boolean {
+interface RulebookLimitInput {
+  allowed_commands?: unknown;
+  author?: unknown;
+  description?: unknown;
+  migrated_from?: unknown;
+  name?: unknown;
+  rules?: unknown;
+  tests?: unknown;
+  version?: unknown;
+}
+
+type RulebookStringCandidate = z.input<z.ZodUnknown>;
+
+const limitStringSchema = z.string();
+const limitedRuleSchema = z.looseObject({
+  block_args: z.unknown().optional(),
+  command: z.unknown().optional(),
+  intent: z.unknown().optional(),
+  name: z.unknown().optional(),
+  reason: z.unknown().optional(),
+  subcommand: z.unknown().optional(),
+});
+const limitedFixtureSchema = z.looseObject({
+  command: z.unknown().optional(),
+  expect: z.unknown().optional(),
+  rule: z.unknown().optional(),
+});
+
+export function isRulebookWithinAcceptanceLimits(rulebook: RulebookLimitInput): boolean {
   if (
     exceedsArrayLimit(rulebook.allowed_commands, RULEBOOK_LIMITS.maxAllowedCommands) ||
     exceedsArrayLimit(rulebook.rules, RULEBOOK_LIMITS.maxRules) ||
@@ -24,16 +54,17 @@ export function isRulebookWithinAcceptanceLimits(rulebook: Record<string, unknow
 
   let remainingStringCodeUnits = RULEBOOK_LIMITS.maxAggregateStringCodeUnits;
   let remainingBlockArgs = RULEBOOK_LIMITS.maxTotalBlockArgs;
-  const acceptString = (value: unknown, fixtureCommand = false) => {
-    if (typeof value !== 'string') return true;
+  const acceptString = (value: RulebookStringCandidate, fixtureCommand = false) => {
+    const parsed = limitStringSchema.safeParse(value);
+    if (!parsed.success) return true;
     if (
-      value.length > RULEBOOK_LIMITS.maxStringCodeUnits ||
-      (fixtureCommand && value.length > RULEBOOK_LIMITS.maxFixtureCommandCodeUnits) ||
-      value.length > remainingStringCodeUnits
+      parsed.data.length > RULEBOOK_LIMITS.maxStringCodeUnits ||
+      (fixtureCommand && parsed.data.length > RULEBOOK_LIMITS.maxFixtureCommandCodeUnits) ||
+      parsed.data.length > remainingStringCodeUnits
     ) {
       return false;
     }
-    remainingStringCodeUnits -= value.length;
+    remainingStringCodeUnits -= parsed.data.length;
     return true;
   };
 
@@ -55,8 +86,9 @@ export function isRulebookWithinAcceptanceLimits(rulebook: Record<string, unknow
 
   if (Array.isArray(rulebook.rules)) {
     for (const rule of rulebook.rules) {
-      if (!rule || typeof rule !== 'object') continue;
-      const candidate = rule as Record<string, unknown>;
+      const parsed = limitedRuleSchema.safeParse(rule);
+      if (!parsed.success) continue;
+      const candidate = parsed.data;
       if (
         !acceptString(candidate.name) ||
         !acceptString(candidate.command) ||
@@ -82,8 +114,9 @@ export function isRulebookWithinAcceptanceLimits(rulebook: Record<string, unknow
 
   if (Array.isArray(rulebook.tests)) {
     for (const fixture of rulebook.tests) {
-      if (!fixture || typeof fixture !== 'object') continue;
-      const candidate = fixture as Record<string, unknown>;
+      const parsed = limitedFixtureSchema.safeParse(fixture);
+      if (!parsed.success) continue;
+      const candidate = parsed.data;
       if (
         !acceptString(candidate.command, true) ||
         !acceptString(candidate.expect) ||
@@ -97,6 +130,9 @@ export function isRulebookWithinAcceptanceLimits(rulebook: Record<string, unknow
   return true;
 }
 
-function exceedsArrayLimit(value: unknown, limit: number): boolean {
+function exceedsArrayLimit(
+  value: RulebookLimitInput[keyof RulebookLimitInput],
+  limit: number,
+): boolean {
   return Array.isArray(value) && value.length > limit;
 }

@@ -13,7 +13,16 @@ import {
   writeUserPolicy,
 } from '../hook-helpers';
 
-function hermesInput(overrides: Record<string, unknown>) {
+type HermesFixtureValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly HermesFixtureValue[]
+  | { readonly [key: string]: HermesFixtureValue };
+type HermesFixture = { readonly [key: string]: HermesFixtureValue };
+
+function hermesInput(overrides: HermesFixture) {
   return { ...hermesTerminalInput('git status'), ...overrides };
 }
 
@@ -241,9 +250,9 @@ describe('Hermes Agent hook', () => {
 
   describe('tool input limits', () => {
     test('deeply nested tool input fails closed', async () => {
-      const deepToolInput = Array.from({ length: TOOL_INPUT_LIMITS.maxDepth + 5 }).reduce<
-        Record<string, unknown>
-      >((inner) => ({ nested: inner }), { path: '.env' });
+      const deepToolInput = Array.from({
+        length: TOOL_INPUT_LIMITS.maxDepth + 5,
+      }).reduce<HermesFixture>((inner) => ({ nested: inner }), { path: '.env' });
 
       expect(
         getHookDenyReason(

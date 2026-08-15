@@ -9,9 +9,9 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import { AMP_MANAGED_HEADER } from '@/integrations/amp/artifact';
 import { type AmpRunner, runAmpCommand } from '@/integrations/amp/run';
-import { readRecord } from '@/integrations/detect/context';
 import { atomicWriteFile } from '@/integrations/install/atomic-write';
 import type { InstallResult } from '@/integrations/install/types';
 import { getPackageVersion } from '@/integrations/system-info';
@@ -64,11 +64,33 @@ function lstatOrUndefined(path: string) {
   }
 }
 
-function parseJsonOrUndefined(raw: string): unknown {
+const jsonObjectSchema = z.record(z.string(), z.json());
+const personalPluginRepositorySchema = z.object({
+  scope: z.literal('user'),
+  exists: z.literal(true),
+  viewerCanWrite: z.literal(true),
+  cloneRef: z.string().min(1),
+});
+const personalPluginRepositoriesSchema = z.array(z.json()).transform((entries) =>
+  entries.flatMap((entry) => {
+    const parsed = personalPluginRepositorySchema.safeParse(entry);
+    return parsed.success ? [parsed.data] : [];
+  }),
+);
+
+function parseJsonObjectOrUndefined(raw: string): z.infer<typeof jsonObjectSchema> | undefined {
   try {
-    return JSON.parse(raw);
+    return jsonObjectSchema.safeParse(JSON.parse(raw)).data;
   } catch {
     return undefined;
+  }
+}
+
+function parsePersonalPluginRepositories(raw: string) {
+  try {
+    return personalPluginRepositoriesSchema.safeParse(JSON.parse(raw)).data ?? [];
+  } catch {
+    return [];
   }
 }
 
@@ -108,16 +130,7 @@ async function requirePersonalPluginsRef(run: AmpRunner): Promise<string> {
       `Failed to run amp plugins repositories --json (exit ${result.status}). Sign in with "amp login" and rerun install --amp.\n${[result.stdout, result.stderr].filter(Boolean).join('\n')}`.trim(),
     );
 
-  const parsed = parseJsonOrUndefined(result.stdout);
-  const cloneRef = (Array.isArray(parsed) ? parsed : [])
-    .filter(
-      (entry) =>
-        readRecord(entry, 'scope') === 'user' &&
-        readRecord(entry, 'exists') === true &&
-        readRecord(entry, 'viewerCanWrite') === true,
-    )
-    .map((entry) => readRecord(entry, 'cloneRef'))
-    .find((ref): ref is string => typeof ref === 'string' && ref.length > 0);
+  const cloneRef = parsePersonalPluginRepositories(result.stdout)[0]?.cloneRef;
   if (!cloneRef)
     throw new Error(
       'Your Amp account has no writable Personal Plugins repository. Sign in with "amp login", open Amp once to create it, and rerun install --amp.',
@@ -227,8 +240,8 @@ function removeMaskingLocalPlugin(homeDir: string, onUnmanaged: 'fail' | 'keep')
 function embeddedPolicyStamp(): string {
   const path = getUserPolicyPath();
   if (!existsSync(path)) return '';
-  const parsed = parseJsonOrUndefined(readFileSync(path, 'utf-8'));
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+  const parsed = parseJsonObjectOrUndefined(readFileSync(path, 'utf-8'));
+  if (!parsed) return '';
   return `;globalThis.__CC_SAFETY_NET_EMBEDDED_POLICY__ = ${JSON.stringify(normalizeGuiPolicy(parsed))};\n`;
 }
 

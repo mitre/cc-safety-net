@@ -13,7 +13,16 @@ import {
   writeUserPolicy,
 } from '../hook-helpers';
 
-async function expectDeny(input: object | string, reason: string) {
+type CopilotFixtureValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly CopilotFixtureValue[]
+  | { readonly [key: string]: CopilotFixtureValue };
+type CopilotFixture = { readonly [key: string]: CopilotFixtureValue };
+
+async function expectDeny(input: CopilotFixture | string, reason: string) {
   const result = await runCopilotHook(input);
   expect(getHookDenyReason(result, 'copilot-cli')).toContain(reason);
 }
@@ -133,13 +142,15 @@ describe('GitHub Copilot CLI hook', () => {
     ] as const)('does not audit unsafe input with a %s sessionId', async (_label, sessionId) => {
       await withHookTestContext(async (context) => {
         const timestamp = 1_234_567_890;
-        const result = await context.runCopilotHook({
-          ...(sessionId === undefined ? {} : { sessionId }),
+        const input = {
           timestamp,
           cwd: context.cwd,
           toolName: 'bash',
           toolArgs: JSON.stringify({ command: 'git reset --hard' }),
-        });
+        };
+        const result = await context.runCopilotHook(
+          sessionId === undefined ? input : { ...input, sessionId },
+        );
 
         expect(getHookDenyReason(result, 'copilot-cli')).toContain('git reset --hard');
         expect(existsSync(join(context.home, '.cc-safety-net', 'logs'))).toBe(false);

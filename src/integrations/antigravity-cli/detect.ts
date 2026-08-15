@@ -3,36 +3,41 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { z } from 'zod';
 import { getAntigravityHooksPath } from '@/integrations/antigravity/hook';
 import type { DetectContext, HookDetection } from '@/integrations/detect/context';
 
 const ANTIGRAVITY_HOOK_COMMAND_PATTERN =
   /cc-safety-net\s+hook\s+(?:[^\s]+\s+)*(?:--agy-cli|-ac)(\s|["']|$)/;
 
-function _findAntigravitySafetyNetHooks(
-  config: unknown,
-): Array<{ enabled: boolean; command: string }> {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return [];
+const antigravityHookSchema = z.object({ command: z.string() });
+const antigravityPreToolUseSchema = z.object({ hooks: z.array(z.json()) });
+const antigravityHookDefinitionSchema = z.object({
+  enabled: z.json().optional(),
+  PreToolUse: z.array(z.json()),
+});
+const antigravityHooksConfigSchema = z.record(z.string(), z.json());
+type AntigravityHooksConfig = z.infer<typeof antigravityHooksConfigSchema>;
 
-  return Object.values(config as Record<string, unknown>).flatMap((definition) => {
-    if (!definition || typeof definition !== 'object' || Array.isArray(definition)) return [];
+function findAntigravitySafetyNetHooks(config: AntigravityHooksConfig) {
+  return Object.values(config).flatMap((definition) => {
+    const parsedDefinition = antigravityHookDefinitionSchema.safeParse(definition);
+    if (!parsedDefinition.success) return [];
 
-    const record = definition as Record<string, unknown>;
-    const preToolUse = record.PreToolUse;
-    if (!Array.isArray(preToolUse)) return [];
-
-    return preToolUse.flatMap((entry) => {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-      const hooks = (entry as Record<string, unknown>).hooks;
-      if (!Array.isArray(hooks)) return [];
-
-      return hooks.flatMap((hook) => {
-        if (!hook || typeof hook !== 'object' || Array.isArray(hook)) return [];
-        const command = (hook as Record<string, unknown>).command;
-        if (typeof command !== 'string' || !ANTIGRAVITY_HOOK_COMMAND_PATTERN.test(command)) {
+    return parsedDefinition.data.PreToolUse.flatMap((entry) => {
+      const parsedEntry = antigravityPreToolUseSchema.safeParse(entry);
+      if (!parsedEntry.success) return [];
+      return parsedEntry.data.hooks.flatMap((hook) => {
+        const parsedHook = antigravityHookSchema.safeParse(hook);
+        if (
+          !parsedHook.success ||
+          !ANTIGRAVITY_HOOK_COMMAND_PATTERN.test(parsedHook.data.command)
+        ) {
           return [];
         }
-        return [{ command, enabled: record.enabled !== false }];
+        return [
+          { command: parsedHook.data.command, enabled: parsedDefinition.data.enabled !== false },
+        ];
       });
     });
   });
@@ -47,7 +52,10 @@ export function detect(context: DetectContext): HookDetection {
 
   let matches: Array<{ enabled: boolean; command: string }>;
   try {
-    matches = _findAntigravitySafetyNetHooks(JSON.parse(readFileSync(configPath, 'utf-8')));
+    const config = antigravityHooksConfigSchema.safeParse(
+      JSON.parse(readFileSync(configPath, 'utf-8')),
+    );
+    matches = config.success ? findAntigravitySafetyNetHooks(config.data) : [];
   } catch (e) {
     return {
       platform: 'antigravity-cli',

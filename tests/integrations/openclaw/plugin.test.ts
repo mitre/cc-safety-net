@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createOpenClawBeforeToolCallHandler,
+  type OpenClawBeforeToolCallEvent,
+  type OpenClawBeforeToolCallResult,
+  type OpenClawPluginApi,
+  type OpenClawToolContext,
   registerOpenClawPlugin,
 } from '@/integrations/openclaw/plugin';
 import type { AnalyzeOptions } from '@/ir/analysis';
@@ -11,7 +15,23 @@ import { readAuditLogEntriesForSession, readLatestAuditLogEntry, withEnv } from 
 
 type AnalyzeCall = { command: string; cwd?: string; shell?: string };
 
-type Registration = { hookName: string; handler: unknown; opts: unknown };
+type Registration = {
+  hookName: 'before_tool_call';
+  handler: (
+    event: OpenClawBeforeToolCallEvent,
+    ctx: OpenClawToolContext,
+  ) => OpenClawBeforeToolCallResult;
+  opts: { matcher: readonly [string, ...string[]]; priority: number };
+};
+type TestOpenClawValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | TestOpenClawValue[]
+  | { [key: string]: TestOpenClawValue };
+type TestExecParams = { [key: string]: TestOpenClawValue };
 
 describe('OpenClaw before_tool_call plugin', () => {
   test('registers a before_tool_call handler for the canonical exec matcher', () => {
@@ -22,7 +42,7 @@ describe('OpenClaw before_tool_call plugin', () => {
       expect(registrations).toHaveLength(1);
       expect(registrations[0]?.hookName).toBe('before_tool_call');
       expect(registrations[0]?.opts).toEqual({ matcher: ['exec'], priority: 50 });
-      expect(typeof registrations[0]?.handler).toBe('function');
+      expect(registrations[0]?.handler).toBeFunction();
     });
   });
 
@@ -39,9 +59,11 @@ describe('OpenClaw before_tool_call plugin', () => {
 
   test('resolves the agent workspace from the plugin config and the context agent id', () => {
     withWorkspace((dir) => {
-      const resolveCalls: Array<[unknown, unknown]> = [];
+      const resolveCalls: Array<
+        [Parameters<OpenClawPluginApi['runtime']['agent']['resolveAgentWorkspaceDir']>[0], string]
+      > = [];
       const api = openClawApi(dir, {
-        resolveAgentWorkspaceDir: (config: unknown, agentId: unknown) => {
+        resolveAgentWorkspaceDir: (config, agentId) => {
           resolveCalls.push([config, agentId]);
           return dir;
         },
@@ -61,12 +83,13 @@ describe('OpenClaw before_tool_call plugin', () => {
       const result = createOpenClawBeforeToolCallHandler(openClawApi(dir))(
         execEvent({ command: 'rm -rf .' }),
         toolContext(),
-      ) as { block: boolean; blockReason: string };
+      );
 
+      if (!result) throw new Error('expected destructive command to be blocked');
       expect(Object.keys(result).sort()).toEqual(['block', 'blockReason']);
-      expect(result.block).toBeTrue();
-      expect(result.blockReason).toContain('BLOCKED by CC Safety Net');
-      expect(result.blockReason).toContain('Command: rm -rf .');
+      expect(result?.block).toBeTrue();
+      expect(result?.blockReason).toContain('BLOCKED by CC Safety Net');
+      expect(result?.blockReason).toContain('Command: rm -rf .');
     });
   });
 
@@ -75,9 +98,9 @@ describe('OpenClaw before_tool_call plugin', () => {
       const result = createOpenClawBeforeToolCallHandler(openClawApi(dir))(
         execEvent({ command: 'cat .env' }),
         toolContext(),
-      ) as { blockReason: string };
+      );
 
-      expect(result.blockReason).toContain('Access to a sensitive path is not allowed.');
+      expect(result?.blockReason).toContain('Access to a sensitive path is not allowed.');
     });
   });
 
@@ -218,11 +241,9 @@ describe('OpenClaw before_tool_call plugin', () => {
           },
         }),
       );
-      const result = throwing(execEvent({ command: 'git status' }), toolContext()) as {
-        blockReason: string;
-      };
-      expect(result.blockReason).toContain('CC Safety Net failed closed');
-      expect(result.blockReason).not.toContain('no workspace');
+      const result = throwing(execEvent({ command: 'git status' }), toolContext());
+      expect(result?.blockReason).toContain('CC Safety Net failed closed');
+      expect(result?.blockReason).not.toContain('no workspace');
     });
   });
 
@@ -294,11 +315,11 @@ describe('OpenClaw before_tool_call plugin', () => {
             throw new Error('unexpected analysis failure');
           },
         },
-      })(execEvent({ command: 'git status' }), toolContext()) as { blockReason: string };
+      })(execEvent({ command: 'git status' }), toolContext());
 
-      expect(result.blockReason).toContain('CC Safety Net failed closed');
-      expect(result.blockReason).toContain('Command: git status');
-      expect(result.blockReason).not.toContain('unexpected analysis failure');
+      expect(result?.blockReason).toContain('CC Safety Net failed closed');
+      expect(result?.blockReason).toContain('Command: git status');
+      expect(result?.blockReason).not.toContain('unexpected analysis failure');
     });
   });
 
@@ -309,9 +330,9 @@ describe('OpenClaw before_tool_call plugin', () => {
         const result = createOpenClawBeforeToolCallHandler(openClawApi(dir))(
           execEvent({ command: 'cat .env' }),
           toolContext({ sessionId: 'oc-session-deny' }),
-        ) as { blockReason: string };
+        );
 
-        expect(result.blockReason).toContain('Access to a sensitive path is not allowed.');
+        expect(result?.blockReason).toContain('Access to a sensitive path is not allowed.');
         expect(readLatestAuditLogEntry(home, 'oc-session-deny')).toEqual(
           expect.objectContaining({
             agent: 'openclaw',
@@ -398,38 +419,37 @@ function handlerWithAnalyzer(dir: string, calls: AnalyzeCall[]) {
   });
 }
 
-function execEvent(params: Record<string, unknown>) {
+function execEvent(params: TestExecParams) {
   return { toolName: 'exec', params };
 }
 
-function toolContext(overrides: Record<string, unknown> = {}) {
+function toolContext(overrides: Partial<OpenClawToolContext> = {}): OpenClawToolContext {
   return {
     toolName: 'exec',
     agentId: 'main',
     sessionId: 'oc-session',
     ...overrides,
-  } as Parameters<ReturnType<typeof createOpenClawBeforeToolCallHandler>>[1];
+  };
 }
 
 function openClawApi(
   workspaceDir: string,
   overrides: {
     registrations?: Registration[];
-    resolveAgentWorkspaceDir?: (config: unknown, agentId: unknown) => unknown;
+    resolveAgentWorkspaceDir?: OpenClawPluginApi['runtime']['agent']['resolveAgentWorkspaceDir'];
   } = {},
-) {
+): OpenClawPluginApi {
   return {
     config: { agents: { defaults: { workspace: workspaceDir } } },
     runtime: {
       agent: {
-        resolveAgentWorkspaceDir:
-          overrides.resolveAgentWorkspaceDir ?? (() => workspaceDir as unknown),
+        resolveAgentWorkspaceDir: overrides.resolveAgentWorkspaceDir ?? (() => workspaceDir),
       },
     },
-    on: (hookName: string, handler: unknown, opts: unknown) => {
+    on: (hookName, handler, opts) => {
       overrides.registrations?.push({ hookName, handler, opts });
     },
-  } as unknown as Parameters<typeof createOpenClawBeforeToolCallHandler>[0];
+  };
 }
 
 function withWorkspace(fn: (dir: string) => void): void {

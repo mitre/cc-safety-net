@@ -23,7 +23,7 @@ function getOpenClawStateDir(home: string): string {
 }
 
 /** Env keys that pin every OpenClaw process at the temporary home. */
-export function openClawEnv(home: string): Record<string, string> {
+export function openClawEnv(home: string) {
   const stateDir = getOpenClawStateDir(home);
   return {
     OPENCLAW_STATE_DIR: stateDir,
@@ -31,7 +31,18 @@ export function openClawEnv(home: string): Record<string, string> {
   };
 }
 
-function sseChunk(delta: Record<string, unknown>, finishReason: string | null) {
+type StubModelDelta = {
+  role?: 'assistant';
+  content?: string;
+  tool_calls?: readonly {
+    index: number;
+    id: string;
+    type: 'function';
+    function: { name: 'exec'; arguments: string };
+  }[];
+};
+
+function sseChunk(delta: StubModelDelta, finishReason: string | null) {
   return `data: ${JSON.stringify({
     id: 'chatcmpl-stub',
     object: 'chat.completion.chunk',

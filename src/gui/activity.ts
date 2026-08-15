@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { z } from 'zod';
 import {
   commandSignature,
   getAuditLogsDir,
@@ -9,6 +10,7 @@ import {
 import type { AuditLogEntry } from '@/ir/audit';
 
 const ENTRY_CAP = 500;
+const ActivityEntrySchema = z.object({ ts: z.string(), command: z.string() });
 
 /**
  * Fill the cap from both decision classes, newest first within each. Either
@@ -50,7 +52,7 @@ export function getActivityFeed(days: number, logsDir: string | null = getAuditL
   const skips = { count: 0 };
   for (const file of logsDir ? listAuditLogFiles(logsDir, skips) : []) {
     for (const entry of readAuditLogEntries(file, skips)) {
-      if (!entry || typeof entry.ts !== 'string' || typeof entry.command !== 'string') continue;
+      if (!ActivityEntrySchema.safeParse(entry).success) continue;
       const ts = new Date(entry.ts).getTime();
       if (!Number.isFinite(ts)) continue;
       if (ts >= cutoff) windowEntries.push(entry);

@@ -55,7 +55,7 @@ import {
   removeRulebookSourceWithHooks,
   syncRulesConfigWithHooks,
 } from '@/rules/policy/sync';
-import type { LoadedRulesPolicy, RulebookLockEntry, RulesLockfile } from '@/rules/policy/types';
+import type { LoadedRulesPolicy, RulesLockfile } from '@/rules/policy/types';
 import { RULEBOOK_LIMIT_ERROR, RULEBOOK_LIMITS } from '@/rules/rulebook-limits';
 import type { TestPolicyInput } from '../helpers/policy';
 import { analyzeTestCommand as analyzeCommand } from '../helpers/policy';
@@ -237,7 +237,7 @@ function mockGitHubRepoRulebooksFetch(
   extraTreeEntries: Array<{ path: string; type: 'blob' }> = [],
 ): typeof fetch {
   const rawPrefix = 'https://raw.githubusercontent.com/owner/repo/abc123/.cc-safety-net/rules/';
-  return (async (input: Parameters<typeof fetch>[0]) => {
+  return fetchDouble(async (input) => {
     const url = String(input);
     switch (url) {
       case 'https://api.github.com/repos/owner/repo':
@@ -264,7 +264,13 @@ function mockGitHubRepoRulebooksFetch(
       if (name && rulebooks[name]) return new Response(rulebooks[name]);
     }
     return new Response('', { status: 404 });
-  }) as unknown as typeof fetch;
+  });
+}
+
+function fetchDouble(
+  implementation: (...parameters: Parameters<typeof fetch>) => ReturnType<typeof fetch>,
+): typeof fetch {
+  return Object.assign(implementation, { preconnect: globalThis.fetch.preconnect });
 }
 
 describe('rules policy recovery coverage', () => {
@@ -805,7 +811,10 @@ describe('rules policy recovery coverage', () => {
         unknownOverrideWarning('project-rules/missing', getProjectRulesConfigPath(tempDir)),
       ]);
 
-      const cachePath = getRulebookCachePath(synced.entries[0] as RulebookLockEntry, {
+      const entry = synced.entries[0];
+      expect(entry).toBeDefined();
+      if (!entry) throw new Error('Expected synchronized rulebook entry');
+      const cachePath = getRulebookCachePath(entry, {
         cacheConfigDir: getProjectRulesDir(tempDir),
         userConfigDir,
       });
@@ -1176,7 +1185,10 @@ describe('rules policy recovery coverage', () => {
       writeProjectRulebookConfig(tempDir);
       const synced = await syncRulesConfig({ cwd: tempDir });
       expect(synced.ok).toBe(true);
-      const cachePath = getRulebookCachePath(synced.entries[0] as RulebookLockEntry, {
+      const entry = synced.entries[0];
+      expect(entry).toBeDefined();
+      if (!entry) throw new Error('Expected synchronized rulebook entry');
+      const cachePath = getRulebookCachePath(entry, {
         cacheConfigDir: getProjectRulesDir(tempDir),
       });
       expect(existsSync(cachePath)).toBe(true);
@@ -1394,12 +1406,12 @@ describe('rules policy recovery coverage', () => {
     try {
       writeProjectRulebook(tempDir);
 
-      globalThis.fetch = (async () => new Response('', { status: 500 })) as unknown as typeof fetch;
+      globalThis.fetch = fetchDouble(async () => new Response('', { status: 500 }));
       expect((await addRulebookSource('owner/repo', { cwd: tempDir })).errors[0]).toContain(
         'GitHub returned 500',
       );
 
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      globalThis.fetch = fetchDouble(async (input) => {
         const url = String(input);
         if (url.endsWith('/repos/owner/repo')) {
           return new Response(JSON.stringify({ default_branch: 'main' }));
@@ -1408,7 +1420,7 @@ describe('rules policy recovery coverage', () => {
           return new Response(JSON.stringify({ sha: 'abc123' }));
         }
         return new Response(JSON.stringify({ tree: [] }));
-      }) as typeof fetch;
+      });
       expect((await addRulebookSource('owner/repo', { cwd: tempDir })).errors[0]).toContain(
         'No rulebooks found',
       );
@@ -1541,13 +1553,12 @@ describe('rules policy recovery coverage', () => {
         'Invalid GitHub repository source',
       );
 
-      globalThis.fetch = (async () =>
-        new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
+      globalThis.fetch = fetchDouble(async () => new Response(JSON.stringify({}), { status: 200 }));
       await expect(discoverGitHubRepositoryRulebooks('owner/repo')).rejects.toThrow(
         'missing default branch',
       );
 
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      globalThis.fetch = fetchDouble(async (input) => {
         const url = String(input);
         if (url === 'https://api.github.com/repos/owner/repo') {
           return new Response(JSON.stringify({ default_branch: 'main' }));
@@ -1556,22 +1567,22 @@ describe('rules policy recovery coverage', () => {
           return new Response(JSON.stringify({ sha: 'abc123' }));
         }
         return new Response('', { status: 500 });
-      }) as unknown as typeof fetch;
+      });
       await expect(discoverGitHubRepositoryRulebooks('owner/repo')).rejects.toThrow(
         'GitHub tree returned 500',
       );
 
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      globalThis.fetch = fetchDouble(async (input) => {
         const url = String(input);
         return url.endsWith('/commits/main')
           ? new Response(JSON.stringify({ sha: 'abc123' }))
           : new Response('', { status: 404 });
-      }) as unknown as typeof fetch;
+      });
       await expect(resolveRulebookSource('owner/repo#main/alpha', tempDir, {})).rejects.toThrow(
         'GitHub raw returned 404',
       );
 
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      globalThis.fetch = fetchDouble(async (input) => {
         const url = String(input);
         if (url === 'https://api.github.com/repos/owner/repo/commits/main') {
           return new Response(JSON.stringify({ sha: 'abc123' }));
@@ -1580,18 +1591,18 @@ describe('rules policy recovery coverage', () => {
           return new Response(rulebookJson('other'));
         }
         return new Response('', { status: 404 });
-      }) as unknown as typeof fetch;
+      });
       await expect(resolveRulebookSource('owner/repo#main/alpha', tempDir, {})).rejects.toThrow(
         'must match GitHub source',
       );
 
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      globalThis.fetch = fetchDouble(async (input) => {
         const url = String(input);
         if (url.includes('raw.githubusercontent.com')) {
           return new Response(rulebookJson('alpha'));
         }
         return new Response('', { status: 404 });
-      }) as unknown as typeof fetch;
+      });
       await expect(
         resolveRulebookSourceForSync(
           'owner/repo#main/alpha',
@@ -1612,12 +1623,12 @@ describe('rules policy recovery coverage', () => {
         name: 'beta',
         digest: sha256Digest(mismatchedContent),
       };
-      globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+      globalThis.fetch = fetchDouble(async (input) => {
         const url = String(input);
         return url.includes('raw.githubusercontent.com/attacker/repo/abc123/')
           ? new Response(mismatchedContent)
           : new Response('', { status: 404 });
-      }) as unknown as typeof fetch;
+      });
       await expect(
         resolveRulebookSourceForSync(
           'owner/repo#main/alpha',

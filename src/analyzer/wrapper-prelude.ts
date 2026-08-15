@@ -206,11 +206,7 @@ function parseTmpdirAppendEnvAssignment(
 
 const SUDO_OPTS_WITH_VALUE = new Set(['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-T', '-U']);
 
-function stripSudoWords(
-  words: readonly CommandWord[],
-  paths: PathResolver,
-  cwd?: string | null,
-): { words: readonly CommandWord[]; cwd?: string | null } {
+function stripSudoWords(words: readonly CommandWord[], paths: PathResolver, cwd?: string | null) {
   let i = 1;
   let currentCwd = cwd;
   while (i < words.length) {
@@ -465,7 +461,7 @@ function parseEnvSplitString(
   envAssignments: ReadonlyMap<string, string>,
   unsetEnvNames: ReadonlySet<string>,
   env: ReadonlyMap<string, string>,
-): { tokens: string[] | null; unverifiableEnvSplit: boolean } {
+) {
   if (value.length > MAX_ENV_SPLIT_EXPANDED_LENGTH) {
     return { tokens: null, unverifiableEnvSplit: true };
   }
@@ -480,10 +476,7 @@ function parseEnvSplitString(
   };
 }
 
-function splitEnvString(
-  value: string,
-  resolveVariable: (name: string) => string,
-): { tokens: string[] | null; limited: boolean } {
+function splitEnvString(value: string, resolveVariable: (name: string) => string) {
   const tokens: string[] = [];
   let parts: string[] = [];
   let totalLength = 0;

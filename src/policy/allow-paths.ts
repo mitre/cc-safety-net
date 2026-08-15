@@ -8,8 +8,8 @@ export function expandAllowPathHome(path: string, home: string): string {
   return path;
 }
 
-export function getDestructiveAllowPathError(value: unknown, home: string): string | null {
-  if (typeof value !== 'string' || value.trim() === '') {
+export function getDestructiveAllowPathError(value: string, home: string): string | null {
+  if (value.trim() === '') {
     return 'must be a non-empty path string';
   }
   const expanded = expandAllowPathHome(value.trim(), home);
@@ -24,8 +24,8 @@ export function getDestructiveAllowPathError(value: unknown, home: string): stri
 // are judged here. The rejected class — home, anything above it, `/` — has no
 // legitimate reading and blocks essentially every command in every workspace
 // under home.
-export function getSecretDenyPathError(value: unknown, home: string): string | null {
-  if (typeof value !== 'string' || value.trim() === '') {
+export function getSecretDenyPathError(value: string, home: string): string | null {
+  if (value.trim() === '') {
     return 'must be a non-empty path string';
   }
   const expanded = expandAllowPathHome(

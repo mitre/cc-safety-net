@@ -28,8 +28,13 @@ export function parseCommandArgs<Flag extends string, Valued extends string>(
   },
   argv: readonly string[],
 ) {
+  // SAFETY: each entry comes from the generic boolean record owned by this spec, so Object.entries
+  // preserves its Flag keys even though the standard library widens them to string.
   const booleanEntries = Object.entries(spec.booleans ?? {}) as [Flag, readonly string[]][];
+  // SAFETY: each entry comes from the generic value record owned by this spec, so Object.entries
+  // preserves its Valued keys even though the standard library widens them to string.
   const valueEntries = Object.entries(spec.values ?? {}) as [Valued, readonly string[]][];
+  // SAFETY: the mapped entries contain every declared boolean key exactly once with value false.
   const flags = Object.fromEntries(booleanEntries.map(([name]) => [name, false])) as Record<
     Flag,
     boolean

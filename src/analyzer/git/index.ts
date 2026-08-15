@@ -80,16 +80,18 @@ function evaluateGit(
 export function analyzeGitDetailed(
   words: readonly CommandWord[],
   options: GitAnalyzeOptions,
-): Readonly<{
-  match: DestructiveCommandRuleMatch | null;
-  relaxation: GitWorktreeRelaxation | null;
-}> {
+): GitAnalysisDetail {
   let relaxation: GitWorktreeRelaxation | null = null;
   const match = evaluateGit(words.map(analysisWordText), options, (value) => {
     relaxation = value;
   });
   return { match, relaxation };
 }
+
+type GitAnalysisDetail = Readonly<{
+  match: DestructiveCommandRuleMatch | null;
+  relaxation: GitWorktreeRelaxation | null;
+}>;
 
 function isGitNetworkOperation(tokens: readonly string[]): boolean {
   const { subcommand, rest } = extractGitSubcommandAndRest(tokens);

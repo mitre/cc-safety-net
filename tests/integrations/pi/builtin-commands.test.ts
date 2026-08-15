@@ -79,17 +79,20 @@ describe('Pi built-in commands', () => {
 });
 
 function recordingPi() {
+  const commands: Record<string, { description?: string; handler: CommandHandler }> = {};
+  const events: Array<{ name: string; handler: ToolCallHandler }> = [];
+  const sentMessages: Array<{ content: string; options: DeliveryOptions | undefined }> = [];
   const pi = {
-    commands: {} as Record<string, { description?: string; handler: CommandHandler }>,
-    events: [] as Array<{ name: string; handler: unknown }>,
-    sentMessages: [] as Array<{ content: string; options: unknown }>,
-    on: (name: string, handler: unknown) => {
+    commands,
+    events,
+    sentMessages,
+    on: (name: string, handler: ToolCallHandler) => {
       pi.events.push({ name, handler });
     },
     registerCommand: (name: string, command: { description?: string; handler: CommandHandler }) => {
       pi.commands[name] = command;
     },
-    sendUserMessage: (content: string, options?: unknown) => {
+    sendUserMessage: (content: string, options?: DeliveryOptions) => {
       pi.sentMessages.push({ content, options });
     },
   };
@@ -97,3 +100,5 @@ function recordingPi() {
 }
 
 type CommandHandler = (args: string, ctx: { isIdle: () => boolean }) => Promise<void>;
+type ToolCallHandler = Parameters<Parameters<typeof ccSafetyNetPiExtension>[0]['on']>[1];
+type DeliveryOptions = { deliverAs: 'followUp' };

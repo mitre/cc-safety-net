@@ -1,4 +1,5 @@
 import type { ShellCommand, ToolCall, URI } from '@ampcode/plugin';
+import { z } from 'zod';
 import { writeIntegrationDenialAudit } from '@/integrations/audit';
 import { resolveContainedCwd } from '@/integrations/cwd-containment';
 import {
@@ -14,18 +15,29 @@ import * as toolRouting from '@/parser/tool-input';
 import { ENV_FLAGS, envTruthy, shouldRecordAllowedCommands } from '@/policy/env';
 import type { PolicySnapshotOptions } from '@/policy/snapshot';
 
+const ampToolInputSchema = z.record(z.string(), z.json());
+const ampToolCallSchema = z.object({
+  toolUseID: z.string(),
+  tool: z.string().trim().min(1),
+  input: ampToolInputSchema,
+  thread: z.object({ id: z.string().trim().min(1) }).optional(),
+});
+const ampThreadSchema = z.object({ thread: z.object({ id: z.string().trim().min(1) }).optional() });
+const ampShellCommandSchema = z.object({
+  command: z.string().trim().min(1),
+  dir: z.string().optional(),
+});
+const ampIngressSchema = z.union([z.json(), z.undefined()]);
+
+type AmpToolCallPayload = ToolCall | z.infer<typeof ampIngressSchema>;
+type AmpShellCommandPayload = z.infer<typeof ampIngressSchema>;
+
 type AmpApi = {
   system: { workspaceRoot: URI | null };
   helpers: {
     filePathFromURI: (uri: URI) => string;
-    shellCommandFromToolCall: (event: ToolCall) => ShellCommand | null;
+    shellCommandFromToolCall: (event: ToolCall) => ShellCommand | AmpShellCommandPayload;
   };
-};
-
-type AmpToolCallEvent = {
-  tool?: unknown;
-  input?: unknown;
-  thread?: { id?: unknown };
 };
 
 type AmpToolCallResult = { action: 'allow' } | { action: 'reject-and-continue'; message: string };
@@ -46,12 +58,12 @@ export const handleAmpToolCall = createAmpToolCallHandler();
 /** @internal */
 export function createAmpToolCallHandler(
   options: AmpHandlerOptions = {},
-): (event: unknown, amp: AmpApi) => AmpToolCallResult {
+): (event: AmpToolCallPayload, amp: AmpApi) => AmpToolCallResult {
   return (event, amp) => handleAmpToolCallWithDependencies(event, amp, options);
 }
 
 function handleAmpToolCallWithDependencies(
-  event: unknown,
+  event: AmpToolCallPayload,
   amp: AmpApi,
   options: AmpHandlerOptions,
 ): AmpToolCallResult {
@@ -92,22 +104,17 @@ function handleAmpToolCallWithDependencies(
 }
 
 function getAmpToolInvocation(
-  event: unknown,
+  event: AmpToolCallPayload,
   amp: AmpApi,
 ): MalformedAmpToolCall | invocationDomain.ToolInvocation {
-  if (!event || typeof event !== 'object') return malformedAmpToolCall(null);
-  const toolCall = event as AmpToolCallEvent;
-  if (typeof toolCall.tool !== 'string' || toolCall.tool.trim() === '') {
-    return malformedAmpToolCall(null);
-  }
-  if (!toolCall.input || typeof toolCall.input !== 'object') {
-    return malformedAmpToolCall(null, toolCall.tool);
-  }
+  const parsedToolCall = ampToolCallSchema.safeParse(event);
+  if (!parsedToolCall.success) return malformedAmpToolCall(null);
+  const toolCall = parsedToolCall.data;
 
   const workspaceRoot = resolveAmpWorkspaceRoot(amp);
   if (!workspaceRoot) return malformedAmpToolCall(null, toolCall.tool);
 
-  const shell = extractAmpShellCommand(amp, event);
+  const shell = extractAmpShellCommand(amp, toolCall);
   if (!shell.ok) return malformedAmpToolCall(workspaceRoot, toolCall.tool);
 
   if (!shell.command) {
@@ -120,12 +127,8 @@ function getAmpToolInvocation(
     );
   }
 
-  if (typeof shell.command.command !== 'string' || shell.command.command.trim() === '') {
-    return malformedAmpToolCall(workspaceRoot, toolCall.tool);
-  }
-
   const executionCwd =
-    typeof shell.command.dir === 'string'
+    shell.command.dir !== undefined
       ? resolveContainedCwd(shell.command.dir, [workspaceRoot])
       : workspaceRoot;
   if (!executionCwd) {
@@ -151,7 +154,7 @@ function resolveAmpWorkspaceRoot(amp: AmpApi): string | undefined {
   if (!workspaceRoot) return undefined;
   try {
     const rootPath = amp.helpers.filePathFromURI(workspaceRoot);
-    if (typeof rootPath !== 'string' || rootPath.trim() === '') return undefined;
+    if (rootPath.trim() === '') return undefined;
     return resolveContainedCwd('.', [rootPath]);
   } catch {
     return undefined;
@@ -160,19 +163,20 @@ function resolveAmpWorkspaceRoot(amp: AmpApi): string | undefined {
 
 function extractAmpShellCommand(
   amp: AmpApi,
-  event: unknown,
+  event: ToolCall,
 ): { ok: true; command: ShellCommand | null } | { ok: false } {
   try {
-    return { ok: true, command: amp.helpers.shellCommandFromToolCall(event as ToolCall) };
+    const command = amp.helpers.shellCommandFromToolCall(event);
+    if (command === null) return { ok: true, command: null };
+    const parsedCommand = ampShellCommandSchema.safeParse(command);
+    return parsedCommand.success ? { ok: true, command: parsedCommand.data } : { ok: false };
   } catch {
     return { ok: false };
   }
 }
 
-function ampThreadId(event: unknown): string | undefined {
-  if (!event || typeof event !== 'object') return undefined;
-  const id = (event as AmpToolCallEvent).thread?.id;
-  return typeof id === 'string' && id.trim() !== '' ? id : undefined;
+function ampThreadId(event: AmpToolCallPayload): string | undefined {
+  return ampThreadSchema.safeParse(event).data?.thread?.id;
 }
 
 function malformedAmpToolCall(

@@ -224,9 +224,10 @@ export function evaluateGuard(
     };
   }
 
+  const analyzedCommand = invocation.command;
   const decision = callDependency('command-analysis', command, () => {
     return dependencies.analyzeCommand(
-      invocation.command as string,
+      analyzedCommand,
       {
         cwd: invocation.context.executionCwd,
         shell: invocation.route.shell,

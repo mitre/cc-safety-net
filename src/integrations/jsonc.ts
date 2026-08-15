@@ -6,7 +6,7 @@ export function stripJsonComments(content: string): string {
   let lastCommaIndex = -1;
 
   while (i < content.length) {
-    const char = content[i] as string;
+    const char = content.charAt(i);
     const next = content[i + 1];
 
     if (isEscaped) {

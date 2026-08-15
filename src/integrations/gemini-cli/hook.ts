@@ -16,7 +16,6 @@ interface GeminiHookInput {
   tool_name?: string;
   tool_input?: {
     command?: string;
-    [key: string]: unknown;
   };
 }
 

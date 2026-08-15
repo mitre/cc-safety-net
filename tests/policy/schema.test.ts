@@ -14,8 +14,9 @@ import { readRulesConfig, validateRulesConfig } from '@/rules/policy/config-file
 import { withTempDir } from '../helpers';
 
 const SOURCE_LIMIT_ERROR = "Rule config exceeds CC Safety Net's safe source limit.";
+type SchemaInput = z.input<z.ZodUnknown>;
 
-function expectOnlyAuthoritativeSourceLimit(input: unknown): void {
+function expectOnlyAuthoritativeSourceLimit(input: SchemaInput): void {
   const result = getRulesConfigSchema().safeParse(input);
   expect(result.success).toBe(false);
   if (result.success) throw new Error('expected authoritative source limit failure');
@@ -180,7 +181,7 @@ describe('configuration schemas', () => {
   });
 
   test('validates destructive command allow paths', () => {
-    const allowPolicy = (allow_paths: unknown) => ({
+    const allowPolicy = (allow_paths: SchemaInput) => ({
       version: 1,
       destructive_command_protection: { allow_paths },
     });
@@ -220,7 +221,7 @@ describe('configuration schemas', () => {
   });
 
   test('validates secret protection deny paths', () => {
-    const denyPolicy = (deny_paths: unknown) => ({
+    const denyPolicy = (deny_paths: SchemaInput) => ({
       version: 1,
       secret_protection: { deny_paths },
     });
@@ -277,17 +278,25 @@ describe('configuration schemas', () => {
   });
 
   test('generates a permissive rule schema with intent', () => {
-    const schema = z.toJSONSchema(getRulesConfigSchema(), { io: 'input', target: 'draft-7' }) as {
-      additionalProperties?: unknown;
-      required?: string[];
-      properties?: {
-        $schema?: { description?: string };
-        overrides?: {
-          propertyNames?: { pattern?: string };
-        };
-        rules?: { default?: unknown; maxItems?: number };
-      };
-    };
+    const schema = z
+      .looseObject({
+        additionalProperties: z.unknown().optional(),
+        required: z.array(z.string()).optional(),
+        properties: z
+          .looseObject({
+            $schema: z.looseObject({ description: z.string().optional() }).optional(),
+            overrides: z
+              .looseObject({
+                propertyNames: z.looseObject({ pattern: z.string().optional() }).optional(),
+              })
+              .optional(),
+            rules: z
+              .looseObject({ default: z.unknown().optional(), maxItems: z.number().optional() })
+              .optional(),
+          })
+          .optional(),
+      })
+      .parse(z.toJSONSchema(getRulesConfigSchema(), { io: 'input', target: 'draft-7' }));
     const serialized = JSON.stringify(schema);
 
     expect(schema.additionalProperties).toEqual({});

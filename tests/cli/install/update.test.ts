@@ -77,20 +77,19 @@ function runUpdate(options: {
     const originalCwd = process.cwd();
     // A non-TTY input keeps the banner off the real stdin (no raw mode, no keypress listener).
     const { chunks, output } = createLolcatOutput(options.isTTY ?? false);
+    const env = {
+      HOME: options.homeDir,
+      PATH: options.path,
+      CC_SAFETY_NET_TEST_COMMAND_LOG: options.logPath,
+    };
     try {
       if (options.cwd) process.chdir(options.cwd);
       const { result, stderr } = await captureConsoleOutput(() =>
-        withEnv(
-          {
-            HOME: options.homeDir,
-            PATH: options.path,
-            ...(options.logPath ? { CC_SAFETY_NET_TEST_COMMAND_LOG: options.logPath } : {}),
-          },
-          () =>
-            runUpdateCommand([], {
-              input: { isTTY: false } as unknown as NodeJS.ReadStream,
-              output: output as unknown as NodeJS.WriteStream,
-            }),
+        withEnv(env, () =>
+          runUpdateCommand([], {
+            input: process.stdin,
+            output,
+          }),
         ),
       );
       return {

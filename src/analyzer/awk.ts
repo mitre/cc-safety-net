@@ -477,16 +477,16 @@ function decodeAwkEscape(code: string, index: number): { value: string; endIndex
     };
   }
 
-  const simpleEscapes: Record<string, string> = {
-    a: '\x07',
-    b: '\b',
-    f: '\f',
-    n: '\n',
-    r: '\r',
-    t: '\t',
-    v: '\v',
-  };
-  return { value: simpleEscapes[char] ?? char, endIndex: index };
+  const simpleEscapes = new Map([
+    ['a', '\x07'],
+    ['b', '\b'],
+    ['f', '\f'],
+    ['n', '\n'],
+    ['r', '\r'],
+    ['t', '\t'],
+    ['v', '\v'],
+  ]);
+  return { value: simpleEscapes.get(char) ?? char, endIndex: index };
 }
 
 function startsAwkKeyword(code: string, index: number, keyword: string): boolean {

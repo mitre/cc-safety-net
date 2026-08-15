@@ -11,6 +11,11 @@ import { RULE_SOURCE_LIMIT, RULE_SOURCE_LIMIT_ERROR } from '@/rules/policy/resou
 import { getRulebookSourceSyntaxError, NAME_PATTERN } from '@/rules/policy/source-syntax';
 import { SECRET_PROTECTION_RULE_ID_SET } from '@/rules/secret-protection-rules';
 
+export type UnparsedValue = Zod.input<Zod.ZodUnknown>;
+type UnparsedConfig = Zod.input<Zod.ZodUnknown>;
+type UnparsedRecord = Zod.output<Zod.ZodRecord<Zod.ZodString, Zod.ZodUnknown>>;
+type RulesConfigValidation = { errors: string[]; sources: Set<string> };
+
 const require = createRequire(import.meta.url);
 let schemas: ReturnType<typeof createSchemas> | undefined;
 const OVER_LIMIT_RULE_SOURCES = Array(RULE_SOURCE_LIMIT + 1).fill('over-limit');
@@ -27,7 +32,7 @@ const USER_POLICY_FIELDS = [
   'audit',
 ];
 
-function preflightRulesConfig(config: unknown): unknown {
+function preflightRulesConfig(config: UnparsedConfig) {
   if (
     !isRecord(config) ||
     !Array.isArray(config.rules) ||
@@ -45,7 +50,8 @@ function preflightRulesConfig(config: unknown): unknown {
 }
 
 function createSchemas() {
-  const z = require('zod') as typeof Zod;
+  const z: typeof Zod = require('zod');
+  const stringValue = (value: UnparsedValue) => z.string().safeParse(value);
   // Zod skips a container's refinement once one of its entries fails fatally, which
   // would hide the remaining entry diagnostics. `when` opts the refinement out of
   // that short-circuit so every entry still reports its own error.
@@ -104,9 +110,11 @@ function createSchemas() {
     if (!isRecord(config)) return;
     if (Array.isArray(config.rules) && config.rules.length <= RULE_SOURCE_LIMIT) {
       const sources = new Set<string>();
-      config.rules.forEach((source, index) => {
+      config.rules.forEach((value, index) => {
         // Non-strings and empty strings already carry the element's own issue.
-        if (typeof source !== 'string' || source === '') return;
+        const parsedSource = stringValue(value);
+        if (!parsedSource.success || parsedSource.data === '') return;
+        const source = parsedSource.data;
         if (source.trim() === '') {
           context.addIssue({
             code: 'custom',
@@ -145,8 +153,10 @@ function createSchemas() {
 
     if (!Array.isArray(config.transparent_wrappers)) return;
     const wrappers = new Set<string>();
-    config.transparent_wrappers.forEach((wrapper, index) => {
-      if (typeof wrapper !== 'string' || !COMMAND_PATTERN.test(wrapper)) return;
+    config.transparent_wrappers.forEach((value, index) => {
+      const parsedWrapper = stringValue(value);
+      if (!parsedWrapper.success || !COMMAND_PATTERN.test(parsedWrapper.data)) return;
+      const wrapper = parsedWrapper.data;
       if (wrappers.has(wrapper)) {
         context.addIssue({
           code: 'custom',
@@ -194,7 +204,7 @@ function createSchemas() {
       ),
       z.record(z.string(), z.enum(['on', 'off'])),
     );
-  const policyPathsSchema = (getPathError: (value: unknown, home: string) => string | null) =>
+  const policyPathsSchema = (getPathError: (value: string, home: string) => string | null) =>
     z
       .array(z.string({ error: 'must be a non-empty path string' }), {
         error: 'must be an array of paths',
@@ -204,8 +214,9 @@ function createSchemas() {
           if (!Array.isArray(paths)) return;
           const home = processHomeDir();
           paths.forEach((path, index) => {
-            if (typeof path !== 'string') return;
-            const error = getPathError(path, home);
+            const parsedPath = stringValue(path);
+            if (!parsedPath.success) return;
+            const error = getPathError(parsedPath.data, home);
             if (error) context.addIssue({ code: 'custom', message: error, path: [index] });
           });
         }),
@@ -308,8 +319,9 @@ function createSchemas() {
         if (!Array.isArray(rules)) return;
         const names = new Set<string>();
         rules.forEach((rule, index) => {
-          const name = isRecord(rule) ? rule.name : undefined;
-          if (typeof name !== 'string') return;
+          const parsedName = stringValue(isRecord(rule) ? rule.name : undefined);
+          if (!parsedName.success) return;
+          const name = parsedName.data;
           if (names.has(name.toLowerCase())) {
             context.addIssue({
               code: 'custom',
@@ -340,9 +352,9 @@ function createSchemas() {
       { error: 'must be an object' },
     )
     .check(
-      alwaysRun<Record<string, unknown>>((fixture, context) => {
+      alwaysRun<Zod.output<typeof RulebookFixtureSchema>>((fixture, context) => {
         if (!isRecord(fixture)) return;
-        if (fixture.expect !== 'blocked' || typeof fixture.rule === 'string') return;
+        if (fixture.expect !== 'blocked' || stringValue(fixture.rule).success) return;
         context.addIssue({
           code: 'custom',
           message: 'required string for blocked fixtures',
@@ -367,8 +379,10 @@ function createSchemas() {
           alwaysRun<unknown[]>((commands, context) => {
             if (!Array.isArray(commands)) return;
             const seen = new Set<string>();
-            commands.forEach((command, index) => {
-              if (typeof command !== 'string' || !COMMAND_PATTERN.test(command)) return;
+            commands.forEach((value, index) => {
+              const parsedCommand = stringValue(value);
+              if (!parsedCommand.success || !COMMAND_PATTERN.test(parsedCommand.data)) return;
+              const command = parsedCommand.data;
               if (seen.has(command)) {
                 context.addIssue({
                   code: 'custom',
@@ -385,14 +399,14 @@ function createSchemas() {
       tests: z.array(RulebookFixtureSchema, { error: 'must be an array if provided' }).optional(),
     })
     .check(
-      alwaysRun<Record<string, unknown>>((rulebook, context) => {
+      alwaysRun<Zod.output<typeof RulebookSchema>>((rulebook, context) => {
         if (!isRecord(rulebook)) return;
         const declared = new Set(collectCustomRuleNames(rulebook));
         if (Array.isArray(rulebook.tests)) {
           const blocked = new Set(
             rulebook.tests.flatMap((fixture) =>
-              isRecord(fixture) && fixture.expect === 'blocked' && typeof fixture.rule === 'string'
-                ? [fixture.rule]
+              isRecord(fixture) && fixture.expect === 'blocked' && stringValue(fixture.rule).success
+                ? [String(fixture.rule)]
                 : [],
             ),
           );
@@ -407,11 +421,12 @@ function createSchemas() {
         }
         if (!Array.isArray(rulebook.allowed_commands) || !Array.isArray(rulebook.rules)) return;
         const allowed = new Set(
-          rulebook.allowed_commands.filter((command) => typeof command === 'string'),
+          rulebook.allowed_commands.filter((command) => stringValue(command).success),
         );
         rulebook.rules.forEach((rule, index) => {
-          const command = isRecord(rule) ? rule.command : undefined;
-          if (typeof command !== 'string' || allowed.has(command)) return;
+          const parsedCommand = stringValue(isRecord(rule) ? rule.command : undefined);
+          if (!parsedCommand.success || allowed.has(parsedCommand.data)) return;
+          const command = parsedCommand.data;
           context.addIssue({
             code: 'custom',
             message: `"${command}" must be listed in allowed_commands`,
@@ -464,7 +479,9 @@ function createSchemas() {
             error: (issue) => {
               if (!isRecord(issue.input)) return 'must be an object';
               const kind = issue.input.kind;
-              return typeof kind === 'string' ? `unknown kind "${kind}"` : 'required string';
+              return stringValue(kind).success
+                ? `unknown kind "${String(kind)}"`
+                : 'required string';
             },
           },
         ),
@@ -509,11 +526,11 @@ export function getRulesLockfileSchema() {
 }
 
 /** Custom rule names as written, in declaration order. */
-export function collectCustomRuleNames(config: unknown): string[] {
+export function collectCustomRuleNames(config: UnparsedConfig): string[] {
   const rules = isRecord(config) ? config.rules : undefined;
   return (Array.isArray(rules) ? rules : []).flatMap((rule) => {
     const name = isRecord(rule) ? rule.name : undefined;
-    return typeof name === 'string' ? [name] : [];
+    return name === String(name) ? [name] : [];
   });
 }
 
@@ -521,14 +538,11 @@ export type RulesConfig = Zod.output<ReturnType<typeof getRulesConfigSchema>>;
 export type RuleOverride = Zod.output<ReturnType<typeof createSchemas>['RuleOverrideSchema']>;
 
 /** @internal */
-export function getRulesConfigDiagnostics(config: unknown): string[] {
+export function getRulesConfigDiagnostics(config: UnparsedConfig): string[] {
   return getRulesConfigValidation(config).errors;
 }
 
-export function getRulesConfigValidation(config: unknown): {
-  errors: string[];
-  sources: Set<string>;
-} {
+export function getRulesConfigValidation(config: UnparsedConfig): RulesConfigValidation {
   const parsed = getSchemas().RulesConfigDiagnosticSchema.safeParse(config);
   if (parsed.success) return { errors: [], sources: new Set(parsed.data.rules) };
   return {
@@ -537,7 +551,7 @@ export function getRulesConfigValidation(config: unknown): {
   };
 }
 
-export function getUserPolicyDiagnostics(config: unknown): string[] {
+export function getUserPolicyDiagnostics(config: UnparsedConfig): string[] {
   const parsed = getUserPolicySchema().safeParse(config);
   if (parsed.success) return [];
   return formatSchemaIssues(sortSchemaIssues(parsed.error.issues, USER_POLICY_FIELDS), ' ');
@@ -612,7 +626,7 @@ function describeIssue(issue: Zod.core.$ZodIssue): string {
 function renderExpectedValues(values: readonly Zod.core.util.Primitive[]) {
   if (values.length > 3) return `one of ${values.join(', ')}`;
   const rendered = values.map((value) =>
-    typeof value === 'string' ? `"${value}"` : String(value),
+    value === String(value) ? `"${String(value)}"` : String(value),
   );
   if (rendered.length < 2) return `${rendered[0]}`;
   return `${rendered.slice(0, -1).join(', ')}${rendered.length > 2 ? ',' : ''} or ${rendered.at(-1)}`;
@@ -621,7 +635,7 @@ function renderExpectedValues(values: readonly Zod.core.util.Primitive[]) {
 function renderIssuePath(path: readonly PropertyKey[]): string {
   return path
     .map((segment, index) => {
-      if (typeof segment === 'number') return `[${segment}]`;
+      if (Number.isInteger(segment)) return `[${String(segment)}]`;
       return index === 0 ? String(segment) : `.${String(segment)}`;
     })
     .join('');
@@ -633,11 +647,11 @@ function renderIssuePath(path: readonly PropertyKey[]): string {
  */
 function sortSchemaIssues(issues: readonly Zod.core.$ZodIssue[], fields: readonly string[]) {
   const entries = issues.map((issue) => issue.path[1]);
-  const entryOrder = [...new Set(entries.filter((entry) => typeof entry === 'string'))];
+  const entryOrder = [...new Set(entries.filter((entry) => entry === String(entry)))];
   const rank = (issue: Zod.core.$ZodIssue, entry: PropertyKey | undefined) =>
     [
       issue.path.length === 0 ? -1 : fields.indexOf(String(issue.path[0])),
-      typeof entry === 'number' ? entry : entryOrder.indexOf(String(entry)),
+      Number.isInteger(entry) ? Number(entry) : entryOrder.indexOf(String(entry)),
       issue.code === 'custom' ? 0 : 1,
     ] as const;
   return issues
@@ -650,7 +664,10 @@ function sortSchemaIssues(issues: readonly Zod.core.$ZodIssue[], fields: readonl
  * Sources that carry no issue of their own stay usable even when the rest of the
  * config is rejected; an over-limit or non-array `rules` field yields none.
  */
-function collectValidSources(config: unknown, issues: readonly Zod.core.$ZodIssue[]): Set<string> {
+function collectValidSources(
+  config: UnparsedConfig,
+  issues: readonly Zod.core.$ZodIssue[],
+): Set<string> {
   const rules = isRecord(config) ? config.rules : undefined;
   if (!Array.isArray(rules)) return new Set();
   if (issues.some((issue) => issue.path.length === 1 && issue.path[0] === 'rules')) {
@@ -658,16 +675,16 @@ function collectValidSources(config: unknown, issues: readonly Zod.core.$ZodIssu
   }
   const rejected = new Set(
     issues
-      .filter((issue) => issue.path[0] === 'rules' && typeof issue.path[1] === 'number')
-      .map((issue) => issue.path[1]),
+      .filter((issue) => issue.path[0] === 'rules' && Number.isInteger(issue.path[1]))
+      .map((issue) => Number(issue.path[1])),
   );
   return new Set(
     rules.filter(
-      (source, index): source is string => typeof source === 'string' && !rejected.has(index),
+      (source, index): source is string => source === String(source) && !rejected.has(index),
     ),
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
+function isRecord(value: UnparsedValue): value is UnparsedRecord {
+  return !!value && Object(value) === value && !Array.isArray(value);
 }

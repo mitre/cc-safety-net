@@ -8,6 +8,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectAllHooks } from '@/integrations/detect';
+import type { StateFileValue } from '@/integrations/detect/context';
 import type { HookStatus } from '@/integrations/doctor-types';
 import { withEnv, withTempDir } from '../../helpers';
 
@@ -17,7 +18,7 @@ function detect(platform: string, homeDir: string, cwd: string): HookStatus | un
   return detectAllHooks(cwd, { homeDir }).find((hook) => hook.platform === platform);
 }
 
-function writeJson(path: string, value: unknown): void {
+function writeJson(path: string, value: StateFileValue): void {
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, JSON.stringify(value, null, 2));
 }

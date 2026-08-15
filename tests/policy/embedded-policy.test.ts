@@ -9,29 +9,30 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadPolicyConfig } from '@/policy/store';
+import { type JsonValue, loadPolicyConfig } from '@/policy/store';
 import { withEnv } from '../helpers';
 
-const EMBEDDED_POLICY_GLOBAL = '__CC_SAFETY_NET_EMBEDDED_POLICY__';
+declare global {
+  var __CC_SAFETY_NET_EMBEDDED_POLICY__: JsonValue | undefined;
+}
 
-function setEmbeddedPolicy(value: unknown): void {
-  (globalThis as Record<string, unknown>)[EMBEDDED_POLICY_GLOBAL] = value;
+function setEmbeddedPolicy(value: JsonValue): void {
+  globalThis.__CC_SAFETY_NET_EMBEDDED_POLICY__ = value;
 }
 
 describe('embedded policy snapshot', () => {
   let tempDir: string;
   let safetyNetHome: string;
-  let original: unknown;
+  let original: JsonValue | undefined;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'safety-net-embedded-policy-'));
     safetyNetHome = join(tempDir, 'home', '.cc-safety-net');
-    original = (globalThis as Record<string, unknown>)[EMBEDDED_POLICY_GLOBAL];
+    original = globalThis.__CC_SAFETY_NET_EMBEDDED_POLICY__;
   });
 
   afterEach(() => {
-    if (original === undefined)
-      delete (globalThis as Record<string, unknown>)[EMBEDDED_POLICY_GLOBAL];
+    if (original === undefined) delete globalThis.__CC_SAFETY_NET_EMBEDDED_POLICY__;
     if (original !== undefined) setEmbeddedPolicy(original);
     rmSync(tempDir, { recursive: true, force: true });
   });

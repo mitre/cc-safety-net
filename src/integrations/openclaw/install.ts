@@ -8,7 +8,8 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lstatOrUndefined, readRecord } from '@/integrations/detect/context';
+import { z } from 'zod';
+import { lstatOrUndefined } from '@/integrations/detect/context';
 import { type NativeCommand, runNativeCommand } from '@/integrations/install/native';
 import {
   OPENCLAW_MANAGED_HEADER,
@@ -19,6 +20,9 @@ import {
 } from '@/integrations/openclaw/artifact';
 
 const OPENCLAW_ARTIFACT_RELATIVE = join('openclaw', OPENCLAW_PLUGIN_ID);
+const openClawInspectSchema = z.object({
+  plugin: z.object({ status: z.string() }),
+});
 
 /**
  * Everything a real `openclaw plugins install` leaves in the extension directory: the three
@@ -148,8 +152,8 @@ function readOpenClawPluginStatus(inspectOutput: string): string | undefined {
       return undefined;
     }
   })();
-  const status = readRecord(readRecord(report, 'plugin'), 'status');
-  return typeof status === 'string' ? status : undefined;
+  const parsed = openClawInspectSchema.safeParse(report);
+  return parsed.success ? parsed.data.plugin.status : undefined;
 }
 
 /**

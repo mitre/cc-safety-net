@@ -217,12 +217,11 @@ describe('rulebook acceptance limits', () => {
   });
 
   test('retains 64 detailed diagnostics and appends one fixed marker on the 65th', () => {
-    const result = validateRulebook(
-      emptyRulebook({
-        allowed_commands: Array(RULEBOOK_LIMITS.maxValidationErrors + 1).fill(null),
-        rules: [{ name: 'TOPSECRET' }] as never,
-      }),
-    );
+    const result = validateRulebook({
+      ...emptyRulebook(),
+      allowed_commands: Array(RULEBOOK_LIMITS.maxValidationErrors + 1).fill(null),
+      rules: [{ name: 'TOPSECRET' }],
+    });
 
     expect(result.errors).toHaveLength(RULEBOOK_LIMITS.maxValidationErrors + 1);
     expect(result.errors.slice(0, RULEBOOK_LIMITS.maxValidationErrors)).toEqual(

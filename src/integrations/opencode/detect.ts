@@ -4,8 +4,11 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import type { DetectContext, HookDetection } from '@/integrations/detect/context';
 import { stripJsonComments } from '@/integrations/jsonc';
+
+const openCodeConfigSchema = z.object({ plugin: z.array(z.string()).optional() });
 
 /**
  * Detect OpenCode plugin configuration.
@@ -22,7 +25,7 @@ export function detect(context: DetectContext): HookDetection {
       try {
         const content = readFileSync(configPath, 'utf-8');
         const json = stripJsonComments(content);
-        const config = JSON.parse(json) as { plugin?: string[] };
+        const config = openCodeConfigSchema.parse(JSON.parse(json));
 
         const plugins = config.plugin ?? [];
         const hasSafetyNet = plugins.some((p) => p.includes('cc-safety-net'));

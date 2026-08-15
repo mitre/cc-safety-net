@@ -10,8 +10,8 @@ export const MAX_AUDIT_RETENTION_DAYS = 365;
  * non-integer, or out of range falls back to the default rather than
  * disabling retention or widening it without bound.
  */
-export function clampAuditRetentionDays(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value)) return DEFAULT_AUDIT_RETENTION_DAYS;
+export function clampAuditRetentionDays(value: number | undefined): number {
+  if (value === undefined || !Number.isInteger(value)) return DEFAULT_AUDIT_RETENTION_DAYS;
   if (value < MIN_AUDIT_RETENTION_DAYS) return MIN_AUDIT_RETENTION_DAYS;
   return value > MAX_AUDIT_RETENTION_DAYS ? MAX_AUDIT_RETENTION_DAYS : value;
 }

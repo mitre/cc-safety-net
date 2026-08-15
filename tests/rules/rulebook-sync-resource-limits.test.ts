@@ -11,6 +11,7 @@ import {
   getUserRulesConfigPath,
   syncRulesConfig,
 } from '@/rules/policy';
+import { readLockfile } from '@/rules/policy/lockfile';
 import { getRulebookCachePath } from '@/rules/policy/paths';
 import { fetchGitHubResource } from '@/rules/policy/resolver';
 import {
@@ -33,7 +34,7 @@ const RESOURCE_LIMIT_ERROR = "Rule synchronization exceeds CC Safety Net's safe 
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
+  let reject!: (error: Error) => void;
   const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
     reject = rejectPromise;
@@ -81,6 +82,9 @@ describe('rulebook sync source fanout limits', () => {
     controls[6]?.resolve(60);
     controls[7]?.resolve(70);
     await expect(operation).resolves.toEqual([0, 10, 20, 30, 40, 50, 60, 70]);
+    await expect(mapRulebookSources([undefined], async (source) => source)).resolves.toEqual([
+      undefined,
+    ]);
 
     const failureControls = Array.from({ length: 8 }, () => deferred<number>());
     const failureStarted: number[] = [];
@@ -192,21 +196,23 @@ describe('rulebook sync source fanout limits', () => {
         getProjectRulesConfigPath(cwd),
         JSON.stringify({ version: 1, rules: ['project-rules'] }),
       );
-      for (const shape of ['enumerable-own', 'non-enumerable-own', 'enumerable-inherited']) {
+      for (const propertyPlacement of [
+        'enumerable-own',
+        'non-enumerable-own',
+        'enumerable-inherited',
+      ]) {
         let reads = 0;
         const inherited = {};
-        const options = (shape === 'enumerable-inherited' ? Object.create(inherited) : {}) as {
-          cwd: string;
-        };
-        options.cwd = cwd;
+        const options = { cwd };
+        if (propertyPlacement === 'enumerable-inherited') Object.setPrototypeOf(options, inherited);
         Object.defineProperty(
-          shape === 'enumerable-inherited' ? inherited : options,
+          propertyPlacement === 'enumerable-inherited' ? inherited : options,
           '_operation',
           {
-            enumerable: shape !== 'non-enumerable-own',
+            enumerable: propertyPlacement !== 'non-enumerable-own',
             get() {
               reads++;
-              throw new Error(`public operation option was read: ${shape}`);
+              throw new Error(`public operation option was read: ${propertyPlacement}`);
             },
           },
         );
@@ -407,9 +413,8 @@ describe('GitHub repository discovery source boundaries', () => {
       expect(requests).toHaveLength(0);
 
       const lockPath = getRulesLockPathForConfigPath(configPath);
-      const lock = JSON.parse(readFileSync(lockPath, 'utf8')) as {
-        rulebooks: Array<Parameters<typeof getRulebookCachePath>[0]>;
-      };
+      const lock = readLockfile(lockPath).lock;
+      if (!lock) throw new Error('missing valid lockfile');
       const remote = lock.rulebooks.find((entry) => entry.kind === 'github');
       if (!remote) throw new Error('missing remote lock entry');
       const cachePath = getRulebookCachePath(remote, {
@@ -432,11 +437,10 @@ describe('GitHub repository discovery source boundaries', () => {
           .ok,
       ).toBe(true);
       expect(requests).toHaveLength(2);
-      expect(
-        (
-          JSON.parse(readFileSync(lockPath, 'utf8')) as { rulebooks: Array<{ name: string }> }
-        ).rulebooks.map((entry) => entry.name),
-      ).toEqual(['rules-00', 'local-rules']);
+      expect(readLockfile(lockPath).lock?.rulebooks.map((entry) => entry.name)).toEqual([
+        'rules-00',
+        'local-rules',
+      ]);
     });
   });
 });

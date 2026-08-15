@@ -60,6 +60,8 @@ interface RemoveRulebookSourceOptions extends SyncRulesConfigOptions {
   deleteSource?: boolean;
 }
 
+type PolicyFileSnapshot = { target: PolicyFilesystemTarget; content: string | null };
+
 export async function syncRulesConfig(
   options: SyncRulesConfigOptions = {},
 ): Promise<SyncRulesConfigResult> {
@@ -127,7 +129,7 @@ async function syncRulesConfigInternal(
   discoveredDisplayRefs?: Map<string, string>,
   hooks: RuleSyncTestHooks = {},
 ): Promise<SyncRulesConfigResult> {
-  let lockSnapshot: { target: PolicyFilesystemTarget; content: string | null } | null = null;
+  let lockSnapshot: PolicyFileSnapshot | null = null;
   let lockPublished = false;
   try {
     const scope = getScopePaths(options);
@@ -213,13 +215,10 @@ async function syncRulesConfigInternal(
     };
   } catch (error) {
     if (lockPublished && lockSnapshot) {
-      try {
-        restoreConfig(lockSnapshot.target, lockSnapshot.content);
-      } catch (rollbackError) {
-        return failWithError(rollbackError);
-      }
+      const rollbackFailure = restoreSnapshot(lockSnapshot);
+      if (rollbackFailure) return rollbackFailure;
     }
-    return failWithError(error);
+    return failWithError(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -259,7 +258,7 @@ async function addRulebookSourceInternal(
   operation: RuleSyncOperation,
   hooks: RuleSyncTestHooks = {},
 ): Promise<SyncRulesConfigResult> {
-  let configSnapshot: { target: PolicyFilesystemTarget; content: string | null } | null = null;
+  let configSnapshot: PolicyFileSnapshot | null = null;
   let configWriteArmed = false;
   try {
     const scope = getScopePaths(options);
@@ -302,13 +301,10 @@ async function addRulebookSourceInternal(
     return result;
   } catch (error) {
     if (configWriteArmed && configSnapshot) {
-      try {
-        restoreConfig(configSnapshot.target, configSnapshot.content);
-      } catch (rollbackError) {
-        return failWithError(rollbackError);
-      }
+      const rollbackFailure = restoreSnapshot(configSnapshot);
+      if (rollbackFailure) return rollbackFailure;
     }
-    return failWithError(error);
+    return failWithError(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -319,22 +315,23 @@ export async function mapRulebookSources<T, U>(
   operation: RuleSyncOperation = createRuleSyncOperation(),
 ): Promise<U[]> {
   if (sources.length > RULE_SOURCE_LIMIT) throw new Error(RULE_SOURCE_LIMIT_ERROR);
-  const results = new Array<U>(sources.length);
+  const pending = sources.map((source, index) => ({ source, index }));
+  const results: U[] = [];
   let nextIndex = 0;
   let firstError: { value: unknown } | undefined;
   const workers = Array.from(
     { length: Math.min(sources.length, RULE_SYNC_RESOURCE_LIMITS.concurrency) },
     async () => {
       while (!firstError) {
-        const index = nextIndex;
-        if (index >= sources.length) return;
+        const item = pending[nextIndex];
+        if (!item) return;
         nextIndex++;
         try {
-          results[index] = await mapper(sources[index] as T, index, operation.controller.signal);
+          results[item.index] = await mapper(item.source, item.index, operation.controller.signal);
         } catch (error) {
           if (!firstError) {
             firstError = { value: error };
-            nextIndex = sources.length;
+            nextIndex = pending.length;
             operation.controller.abort(error);
           }
           return;
@@ -376,7 +373,7 @@ export async function removeRulebookSource(
   try {
     return await removeRulebookSourceInternal(match, projectRemoveOptions(options), {});
   } catch (error) {
-    return failWithError(error);
+    return failWithError(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -389,7 +386,7 @@ export async function removeRulebookSourceWithHooks(
   try {
     return await removeRulebookSourceInternal(match, projectRemoveOptions(options), hooks);
   } catch (error) {
-    return failWithError(error);
+    return failWithError(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -703,10 +700,19 @@ function restoreConfig(path: PolicyFilesystemTarget, content: string | null): vo
   writePolicyFileAtomic(path, content);
 }
 
-function failWithError(error: unknown): SyncRulesConfigResult {
+function restoreSnapshot(snapshot: PolicyFileSnapshot): SyncRulesConfigResult | undefined {
+  try {
+    restoreConfig(snapshot.target, snapshot.content);
+  } catch (error) {
+    return failWithError(error instanceof Error ? error : new Error(String(error)));
+  }
+  return undefined;
+}
+
+function failWithError(error: Error): SyncRulesConfigResult {
   return {
     ok: false,
-    errors: [error instanceof Error ? error.message : String(error)],
+    errors: [error.message],
     warnings: [],
     entries: [],
   };

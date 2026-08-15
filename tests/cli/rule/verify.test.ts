@@ -64,7 +64,7 @@ describe('rule verify $schema backfill', () => {
       expect(first.exitCode).toBe(0);
       expect(first.output).toContain('Added $schema to project config.');
       const written = readFileSync(projectConfig, 'utf-8');
-      const parsed = JSON.parse(written) as Record<string, unknown>;
+      const parsed = JSON.parse(written);
       expect(Object.keys(parsed)[0]).toBe('$schema');
       expect(parsed).toEqual({
         $schema: SCHEMA_URL,

@@ -1,5 +1,8 @@
 import { types as utilTypes } from 'node:util';
-import type { NonCommandToolInputKind } from '@/ir/invocation';
+import { z } from 'zod';
+import type { NonCommandToolInputKind, ToolInputValue } from '@/ir/invocation';
+
+export type { ToolInputValue } from '@/ir/invocation';
 
 const PATCH_TOOL_NAMES = new Set(['applypatch', 'patch']);
 const PATH_TOOL_NAMES = new Set([
@@ -45,6 +48,13 @@ const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder();
 const JS_WHITESPACE = /\s/;
 const MAX_GIT_DIFF_FALLBACK_CANDIDATES = 64;
+const ToolInputStringSchema = z.string();
+const ToolInputObjectSchema = z.custom<object>(
+  (value) => value !== null && Object(value) === value && !z.function().safeParse(value).success,
+);
+const ToolInputKeySchema = z.string();
+
+type ToolInputObject = z.infer<typeof ToolInputObjectSchema>;
 
 export class ToolInputLimitError extends Error {
   override readonly name = 'ToolInputLimitError';
@@ -71,9 +81,9 @@ type ToolInputTraversalState = {
 };
 
 type ToolInputObjectSnapshot = {
-  object: object;
+  object: ToolInputObject;
   array: boolean;
-  entries: readonly (readonly [string, unknown])[];
+  entries: readonly (readonly [string, ToolInputValue])[];
 };
 
 /** @internal */
@@ -94,21 +104,22 @@ export function getNonCommandToolInputKind(toolName: string): NonCommandToolInpu
   return 'unknown';
 }
 
-export function getCommandFromToolInput(input: unknown): string | undefined {
-  if (!input || typeof input !== 'object') return undefined;
-  assertSafeToolInputObject(input);
-  const descriptor = Object.getOwnPropertyDescriptor(input, 'command');
+export function getCommandFromToolInput(input: ToolInputValue): string | undefined {
+  const parsedObject = ToolInputObjectSchema.safeParse(input);
+  if (!parsedObject.success) return undefined;
+  assertSafeToolInputObject(parsedObject.data);
+  const descriptor = Object.getOwnPropertyDescriptor(parsedObject.data, 'command');
   if (!descriptor) {
-    if ('command' in input) throwToolInputLimit();
+    if ('command' in parsedObject.data) throwToolInputLimit();
     return undefined;
   }
   if (descriptor.get || descriptor.set) throwToolInputLimit();
-  const command = descriptor.value;
-  return typeof command === 'string' && command !== '' ? command : undefined;
+  const command = ToolInputStringSchema.safeParse(descriptor.value);
+  return command.success && command.data !== '' ? command.data : undefined;
 }
 
 export function extractPathLikeToolValues(
-  input: unknown,
+  input: ToolInputValue,
   pathLikeKeys: ReadonlySet<string>,
 ): string[] {
   return extractPathLikeToolValuesAt(
@@ -120,7 +131,7 @@ export function extractPathLikeToolValues(
 }
 
 function extractPathLikeToolValuesAt(
-  input: unknown,
+  input: ToolInputValue,
   pathLikeKeys: ReadonlySet<string>,
   state: ToolInputTraversalState,
   depth: number,
@@ -129,8 +140,9 @@ function extractPathLikeToolValuesAt(
   if (!snapshot) return [];
   const values = snapshot.entries.flatMap(([key, value]) => {
     const nested = extractPathLikeToolValuesAt(value, pathLikeKeys, state, depth + 1);
-    return typeof value === 'string' && pathLikeKeys.has(normalizeToolInputKey(key))
-      ? [value]
+    const stringValue = ToolInputStringSchema.safeParse(value);
+    return stringValue.success && pathLikeKeys.has(normalizeToolInputKey(key))
+      ? [stringValue.data]
       : nested;
   });
   state.ancestors.delete(snapshot.object);
@@ -141,7 +153,7 @@ function normalizeToolInputKey(key: string): string {
   return key.replace(/-/g, '_').toLowerCase();
 }
 
-export function extractPatchTargetsFromToolInput(input: unknown): string[] {
+export function extractPatchTargetsFromToolInput(input: ToolInputValue): string[] {
   return extractPatchTexts(
     input,
     true,
@@ -151,13 +163,14 @@ export function extractPatchTargetsFromToolInput(input: unknown): string[] {
 }
 
 function extractPatchTexts(
-  input: unknown,
+  input: ToolInputValue,
   allowString: boolean,
   state: ToolInputTraversalState,
   depth: number,
 ): string[] {
   const snapshot = snapshotToolInputObject(input, state, depth);
-  if (typeof input === 'string') return allowString ? [input] : [];
+  const stringInput = ToolInputStringSchema.safeParse(input);
+  if (stringInput.success) return allowString ? [stringInput.data] : [];
   if (!snapshot) return [];
   const texts = snapshot.entries.flatMap(([key, value]) =>
     extractPatchTexts(
@@ -171,16 +184,22 @@ function extractPatchTexts(
   return texts;
 }
 
-function enterToolInputValue(input: unknown, state: ToolInputTraversalState, depth: number): void {
+function enterToolInputValue(
+  input: ToolInputValue,
+  state: ToolInputTraversalState,
+  depth: number,
+): void {
   state.nodes++;
+  const objectInput = ToolInputObjectSchema.safeParse(input);
   if (
-    (input !== null && typeof input === 'object' && depth > TOOL_INPUT_LIMITS.maxDepth) ||
+    (objectInput.success && depth > TOOL_INPUT_LIMITS.maxDepth) ||
     state.nodes > TOOL_INPUT_LIMITS.maxNodes
   ) {
     throwToolInputLimit();
   }
-  if (typeof input !== 'string') return;
-  const bytes = Buffer.byteLength(input);
+  const stringInput = ToolInputStringSchema.safeParse(input);
+  if (!stringInput.success) return;
+  const bytes = Buffer.byteLength(stringInput.data);
   state.stringBytes += bytes;
   if (
     bytes > TOOL_INPUT_LIMITS.maxStringBytes ||
@@ -191,27 +210,29 @@ function enterToolInputValue(input: unknown, state: ToolInputTraversalState, dep
 }
 
 function snapshotToolInputObject(
-  input: unknown,
+  input: ToolInputValue,
   state: ToolInputTraversalState,
   depth: number,
 ): ToolInputObjectSnapshot | null {
   enterToolInputValue(input, state, depth);
-  if (!input || typeof input !== 'object') return null;
-  const array = assertSafeToolInputObject(input);
-  if (state.ancestors.has(input)) throwToolInputLimit();
-  const keys = Reflect.ownKeys(input);
+  const parsedObject = ToolInputObjectSchema.safeParse(input);
+  if (!parsedObject.success) return null;
+  const array = assertSafeToolInputObject(parsedObject.data);
+  if (state.ancestors.has(parsedObject.data)) throwToolInputLimit();
+  const keys = Reflect.ownKeys(parsedObject.data);
   state.keys += keys.length;
   if (state.keys > TOOL_INPUT_LIMITS.maxKeys) throwToolInputLimit();
-  const entries = keys.flatMap((key): (readonly [string, unknown])[] => {
-    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+  const entries = keys.flatMap((key): (readonly [string, ToolInputValue])[] => {
+    const descriptor = Object.getOwnPropertyDescriptor(parsedObject.data, key);
     if (!descriptor || descriptor.get || descriptor.set) throwToolInputLimit();
-    return typeof key === 'string' && descriptor.enumerable ? [[key, descriptor.value]] : [];
+    const parsedKey = ToolInputKeySchema.safeParse(key);
+    return parsedKey.success && descriptor.enumerable ? [[parsedKey.data, descriptor.value]] : [];
   });
-  state.ancestors.add(input);
-  return { object: input, array, entries };
+  state.ancestors.add(parsedObject.data);
+  return { object: parsedObject.data, array, entries };
 }
 
-function assertSafeToolInputObject(input: object): boolean {
+function assertSafeToolInputObject(input: ToolInputObject): boolean {
   if (utilTypes.isProxy(input)) throwToolInputLimit();
   const array = Array.isArray(input);
   const prototype = Object.getPrototypeOf(input);
