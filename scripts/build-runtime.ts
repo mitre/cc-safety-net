@@ -78,12 +78,22 @@ const inlineZod: BunPlugin = {
 // The split Node bundles ship in repository checkouts (Claude Code marketplace,
 // Codex, Copilot CLI, Kimi Code) that never run a package manager, so
 // `require('zod')` has no node_modules to resolve from. Repoint schema.ts's lazy
-// require at the vendored copy buildRuntimeBundles emits, keeping zod parsed only
-// when a custom-rule config exists. schema.ts lands in the shared chunk
-// (dist/chunks/), so the specifier resolves to dist/vendor/zod.cjs.
+// require and direct imports from I/O schemas at the vendored copy emitted by
+// buildRuntimeBundles instead of embedding another copy. They land in the shared
+// chunk (dist/chunks/), so the specifier resolves to dist/vendor/zod.cjs.
 const vendorZod: BunPlugin = {
   name: 'vendor-zod',
   setup(build) {
+    build.onResolve({ filter: /^zod$/ }, () => ({
+      path: 'zod',
+      namespace: 'vendored-zod',
+    }));
+    build.onLoad({ filter: /.*/, namespace: 'vendored-zod' }, () => ({
+      contents: `import { createRequire } from 'node:module';
+        const require = createRequire(import.meta.url);
+        export const z = require('../vendor/zod.cjs').z;`,
+      loader: 'js',
+    }));
     build.onLoad({ filter: /src[\\/]policy[\\/]schema\.ts$/ }, async (args) => {
       const source = await Bun.file(args.path).text();
       const from = "const z: typeof Zod = require('zod');";

@@ -679,11 +679,11 @@ describe('policy GUI server', () => {
       expect(html).toContain('var createPathList = ');
       expect(html).toContain('var pathLists = {');
       expect(html).toContain('data-path-remove');
-      expect(html).toContain('No ${config2.itemLabel}s configured.');
+      expect(html).toContain('No ${config.itemLabel}s configured.');
       expect(html).toContain('id="deny-paths-count"');
       expect(html).toContain('`${paths.length} path${paths.length === 1 ? "" : "s"}`');
       expect(html).toContain('Already listed:');
-      expect(html).toContain('Remove ${config2.itemLabel} ${escapeHtml(path)}');
+      expect(html).toContain('Remove ${config.itemLabel} ${escapeHtml(path)}');
       expect(html).toContain('var pathListIcons =');
       expect(html).toContain('aria-label="Add deny path"');
       expect(html).toContain('aria-label="Add allow path"');

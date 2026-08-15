@@ -9,7 +9,7 @@ const html = renderPolicyGuiHtml('test-token');
 const helperSource = [
   html.slice(
     html.indexOf('var commandSignature = (source) => {'),
-    html.indexOf('// node_modules/zod/'),
+    html.indexOf('// src/integrations/catalog.ts'),
   ),
   html.slice(
     html.indexOf('var findSuspects = (entries) => {'),

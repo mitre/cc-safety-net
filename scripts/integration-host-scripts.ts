@@ -66,6 +66,7 @@ const amp = {
 };
 plugin(amp);
 const result = await handler({
+  toolUseID: request.threadId + '-call',
   tool: 'Bash',
   input: { command: request.command },
   thread: { id: request.threadId },
