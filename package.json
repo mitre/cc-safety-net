@@ -32,8 +32,8 @@
     "clean": "rm -rf dist",
     "check": "bun run lint && bun run typecheck && bun run knip && bun run check-duplicates && bun run test:coverage && bun run verify:coverage",
     "check:ci": "bun run lint:ci && bun run typecheck && bun run knip && bun run check-duplicates && bun run test:coverage && bun run verify:coverage",
-    "lint": "biome check --write",
-    "lint:ci": "biome ci .",
+    "lint": "biome check --write && oxlint",
+    "lint:ci": "biome ci . && oxlint",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.gui.json --noEmit",
     "knip": "knip-bun --production",
     "check-duplicates": "bunx jscpd src tests --no-tips --exit-code 1 --reporters ai --ignore '**/*.svg'",
@@ -62,10 +62,12 @@
     "@ampcode/plugin": "0.0.0-20260724002649-ga3413e7",
     "@biomejs/biome": "2.3.10",
     "@opencode-ai/plugin": "^1.18.3",
+    "@oxlint/plugins": "1.78.0",
     "@types/bun": "latest",
     "jscpd": "^5.0.14",
     "knip": "^6.32.0",
     "lefthook": "^2.1.10",
+    "oxlint": "1.78.0",
     "typescript": "7.0.2"
   },
   "peerDependencies": {
